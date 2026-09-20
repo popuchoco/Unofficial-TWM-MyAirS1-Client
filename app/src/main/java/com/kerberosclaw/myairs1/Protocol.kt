@@ -1,0 +1,82 @@
+package com.kerberosclaw.myairs1
+
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.util.UUID
+
+object S1Protocol {
+    val MEASUREMENT_SERVICE: UUID = UUID.fromString("46494854-4443-5365-7276-696365030000")
+    val CONTROL_POINT: UUID = UUID.fromString("46494854-4443-5365-7276-696365030001")
+    val SENSOR_MEASUREMENT: UUID = UUID.fromString("46494854-4443-5365-7276-696365030002")
+    val SYNC_MEASUREMENT: UUID = UUID.fromString("46494854-4443-5365-7276-696365030003")
+    val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    val MEASURE_COMMAND: ByteArray = hex("001503000000011001")
+
+    fun hex(value: String): ByteArray = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    fun ByteArray.hexString(): String = joinToString("") { "%02X".format(it.toInt() and 0xff) }
+
+    /** Builds the device time-sync frame from UTC time and the local offset. */
+    fun timeSyncCommand(now: Instant = Instant.now(), zoneId: ZoneId = ZoneId.systemDefault()): ByteArray {
+        val utc = now.atZone(ZoneId.of("UTC"))
+        val local = now.atZone(zoneId)
+        val offsetMinutes = local.offset.totalSeconds / 60
+        val signNibble = if (offsetMinutes < 0) 1 else 0
+        val absMinutes = kotlin.math.abs(offsetMinutes)
+        val timezone = byteArrayOf(((signNibble shl 4) or (absMinutes / 60)).toByte(), (absMinutes % 60).toByte())
+        val year = utc.year
+        return byteArrayOf(0x00, 0x10, 0x0B, 0x00, 0x00, 0x00, 0x01,
+            (year and 0xff).toByte(), ((year shr 8) and 0xff).toByte(),
+            utc.monthValue.toByte(), utc.dayOfMonth.toByte(), utc.hour.toByte(), utc.minute.toByte(), utc.second.toByte(),
+            local.dayOfWeek.value.toByte()) + timezone
+    }
+
+    fun parse(packet: ByteArray, receivedAt: Long = System.currentTimeMillis()): Measurement {
+        require(packet.size >= 18) { "量測封包不足 18 bytes：${packet.size}" }
+        fun u16(offset: Int) = ByteBuffer.wrap(packet, offset, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xffff
+        val epoch = ByteBuffer.wrap(packet, 2, 4).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xffffffffL
+        val tzHex = packet.copyOfRange(6, 8).hexString()
+        val sign = if (tzHex.startsWith("1")) "-" else "+"
+        val hour = tzHex.substring(1, 2).toInt(16)
+        val minute = tzHex.substring(2, 4).toInt(16)
+        val triggerCode = packet[9].toInt() and 0xff
+        val deviceTimeTrusted = kotlin.math.abs(receivedAt / 1000L - epoch) <= 7L * 24 * 60 * 60
+        return Measurement(
+            sequence = packet.copyOfRange(0, 2).hexString(),
+            deviceEpochSeconds = epoch,
+            timestampUtc = if (deviceTimeTrusted) runCatching { Instant.ofEpochSecond(epoch).toString() }.getOrNull() else null,
+            deviceTimeSynchronized = deviceTimeTrusted,
+            timezoneOffset = "%s%02d:%02d".format(sign, hour, minute),
+            protocolVersion = packet[8].toInt() and 0xff,
+            triggerCode = triggerCode,
+            trigger = mapOf(1 to "USER", 2 to "AUTO", 3 to "APP")[triggerCode] ?: "UNKNOWN",
+            batteryPercent = packet[10].toInt() and 0xff,
+            pm25 = u16(11),
+            coverClosed = packet[13].toInt() == 1,
+            temperatureC = u16(14) / 10.0,
+            humidityPercent = u16(16) / 10.0,
+            receivedAt = receivedAt,
+            rawHex = packet.copyOfRange(0, 18).hexString()
+        )
+    }
+}
+
+data class Measurement(
+    val sequence: String,
+    val deviceEpochSeconds: Long,
+    val timestampUtc: String?,
+    val deviceTimeSynchronized: Boolean,
+    val timezoneOffset: String,
+    val protocolVersion: Int,
+    val triggerCode: Int,
+    val trigger: String,
+    val batteryPercent: Int,
+    val pm25: Int,
+    val coverClosed: Boolean,
+    val temperatureC: Double,
+    val humidityPercent: Double,
+    val receivedAt: Long,
+    val rawHex: String
+)

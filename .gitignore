@@ -1,0 +1,15 @@
+/.gradle/
+/.kotlin/
+/.idea/
+/local.properties
+/**/build/
+*.apk
+*.aab
+*.jks
+*.keystore
+/reference/
+/feedback/
+/dist/
+/project.7z
+*.apk.orig
+*.log
