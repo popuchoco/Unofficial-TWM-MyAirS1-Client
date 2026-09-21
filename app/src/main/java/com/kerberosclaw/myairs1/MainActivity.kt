@@ -13,6 +13,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
@@ -24,6 +25,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -50,7 +53,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             var themeMode by remember { mutableStateOf(SettingsStore.theme(this)) }
             val dark = when (themeMode) { ThemeMode.SYSTEM -> isSystemInDarkTheme(); ThemeMode.LIGHT -> false; ThemeMode.DARK -> true }
-            MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = Color(0xFF63D8AF)) else lightColorScheme(primary = Color(0xFF006C4C))) {
+            MyAirTheme(dark) {
                 MainApp(themeMode) { mode -> themeMode = mode; SettingsStore.setTheme(this, mode) }
             }
         }
@@ -90,10 +93,22 @@ class MainActivity : ComponentActivity() {
         }
 
         Scaffold(
-            topBar = { CenterAlignedTopAppBar(title = { Text(page.label, fontWeight = FontWeight.SemiBold) }) },
+            topBar = {
+                TopAppBar(title = {
+                    Column {
+                        Text("MYAIR S1", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(page.label, style = MaterialTheme.typography.titleLarge)
+                    }
+                })
+            },
             bottomBar = {
                 NavigationBar { AppPage.entries.forEach { item ->
-                    NavigationBarItem(selected = page == item, onClick = { page = item }, icon = { Icon(item.icon, null) }, label = { Text(item.label) })
+                    NavigationBarItem(
+                        selected = page == item,
+                        onClick = { page = item },
+                        icon = { Icon(item.icon, contentDescription = item.label) },
+                        label = { Text(item.label) }
+                    )
                 } }
             }
         ) { padding ->
@@ -109,7 +124,7 @@ class MainActivity : ComponentActivity() {
         }
         if (showExportDialog) AlertDialog(
             onDismissRequest = { showExportDialog = false },
-            icon = { Icon(Icons.Outlined.TableView, null) }, title = { Text("匯出量測資料") },
+            icon = { Icon(Icons.Outlined.TableView, contentDescription = null) }, title = { Text("匯出量測資料") },
             text = { Text("請選擇 CSV 的資料範圍") },
             confirmButton = { TextButton(onClick = { showExportDialog = false; exportChoice = false; csvExport.launch("myair-s1-today.csv") }) { Text("單日") } },
             dismissButton = { TextButton(onClick = { showExportDialog = false; exportChoice = true; csvExport.launch("myair-s1-30-days.csv") }) { Text("近 30 日") } }
@@ -117,8 +132,8 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable private fun Page(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
-        LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            item { Column(verticalArrangement = Arrangement.spacedBy(14.dp), content = content) }
+        LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            item { Column(verticalArrangement = Arrangement.spacedBy(16.dp), content = content) }
         }
     }
 
@@ -127,16 +142,7 @@ class MainActivity : ComponentActivity() {
         val pm25 = live?.latest?.pm25 ?: stored?.latestPm25
         val average = live?.averagePm25 ?: stored?.averagePm25
         val band = pm25?.let { Pm25Band.fromConcentration(it.toDouble()) }
-        val cardColor = band?.let { Color(it.backgroundArgb) } ?: MaterialTheme.colorScheme.surfaceVariant
-        val cardContent = band?.let { if (it.darkText) Color(0xFF101010) else Color.White } ?: MaterialTheme.colorScheme.onSurfaceVariant
-        ElevatedCard(colors = CardDefaults.elevatedCardColors(containerColor = cardColor, contentColor = cardContent)) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("最近一次量測", style = MaterialTheme.typography.labelLarge)
-                Text(pm25?.let { "$it µg/m³" } ?: "尚無資料", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
-                average?.let { Text("本次平均 ${"%.1f".format(it)} µg/m³") }
-                Text(band?.label ?: "完成量測後顯示空氣品質")
-            }
-        }
+        AirQualityPanel("最近一次量測", pm25, average, band)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             StatusTile(Modifier.weight(1f), Icons.Outlined.BatteryFull, "裝置電量", state.latest?.batteryPercent?.let { "$it%" } ?: stored?.batteryPercent?.let { "$it%" } ?: "—")
             StatusTile(Modifier.weight(1f), Icons.Outlined.BluetoothConnected, "連線狀態", when { state.connected -> "已連線"; state.connecting -> "連線中"; else -> "未連線" })
@@ -151,8 +157,10 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable private fun StatusTile(modifier: Modifier, icon: ImageVector, title: String, value: String) {
-        ElevatedCard(modifier) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(icon, null, tint = MaterialTheme.colorScheme.primary); Text(title, style = MaterialTheme.typography.labelMedium); Text(value, style = MaterialTheme.typography.titleLarge)
+        OutlinedCard(modifier) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.titleLarge)
         } }
     }
 
@@ -190,12 +198,12 @@ class MainActivity : ComponentActivity() {
 
     @Composable private fun MeasurementResult(summary: SessionSummary) {
         val band = Pm25Band.fromConcentration(summary.latest.pm25.toDouble())
-        val foreground = if (band.darkText) Color(0xFF101010) else Color.White
-        ElevatedCard(colors = CardDefaults.elevatedCardColors(containerColor = Color(band.backgroundArgb), contentColor = foreground)) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("量測結果", style = MaterialTheme.typography.titleMedium)
-                Text("${summary.latest.pm25} µg/m³", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                Text("本次平均 ${"%.1f".format(summary.averagePm25)} µg/m³")
+        OutlinedCard {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                DataCardHeader("量測結果", band)
+                Text("${summary.latest.pm25} µg/m³", style = MaterialTheme.typography.displaySmall)
+                Text("本次平均 ${"%.1f".format(summary.averagePm25)} µg/m³", style = MaterialTheme.typography.titleMedium)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SessionDetails(summary)
                 Text("${band.label}｜瞬時 PM2.5 濃度分級參考，非完整 AQI", style = MaterialTheme.typography.bodySmall)
             }
@@ -232,8 +240,12 @@ class MainActivity : ComponentActivity() {
         val line = MaterialTheme.colorScheme.primary
         val grid = MaterialTheme.colorScheme.outlineVariant
         val max = maxOf(10.0, data.maxOf { it.value } * 1.1)
-        Text("最高 ${"%.1f".format(data.maxOf { it.value })}　最低 ${"%.1f".format(data.minOf { it.value })} µg/m³", style = MaterialTheme.typography.bodySmall)
-        Canvas(Modifier.fillMaxWidth().height(210.dp)) {
+        val high = data.maxOf { it.value }
+        val low = data.minOf { it.value }
+        Text("最高 ${"%.1f".format(high)}　最低 ${"%.1f".format(low)} µg/m³", style = MaterialTheme.typography.bodySmall)
+        Canvas(Modifier.fillMaxWidth().height(210.dp).semantics {
+            contentDescription = "PM2.5 折線圖，共 ${data.size} 筆；最高 ${"%.1f".format(high)}，最低 ${"%.1f".format(low)} 微克每立方公尺"
+        }) {
             repeat(4) { row -> val y = size.height * row / 3f; drawLine(grid, Offset(0f, y), Offset(size.width, y), 1f) }
             val path = Path()
             data.forEachIndexed { index, point ->
@@ -262,13 +274,51 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Composable private fun InfoRow(label: String, value: String) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(label); Text(value, fontWeight = FontWeight.SemiBold) } }
+    @Composable private fun InfoRow(label: String, value: String) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, fontWeight = FontWeight.SemiBold)
+        }
+    }
 
     @Composable private fun SectionCard(title: String, icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
-        ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary); Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+        OutlinedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Text(title, style = MaterialTheme.typography.titleMedium)
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             content()
         } }
+    }
+
+    @Composable private fun AirQualityPanel(title: String, value: Int?, average: Double?, band: Pm25Band?) {
+        OutlinedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    band?.let { AirQualityBadge(it) }
+                }
+                Text(value?.let { "$it µg/m³" } ?: "尚無資料", style = MaterialTheme.typography.displaySmall)
+                average?.let { Text("本次平均 ${"%.1f".format(it)} µg/m³", style = MaterialTheme.typography.titleMedium) }
+                Text(band?.label ?: "完成量測後顯示空氣品質", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+
+    @Composable private fun DataCardHeader(title: String, band: Pm25Band) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AirQualityBadge(band)
+        }
+    }
+
+    @Composable private fun AirQualityBadge(band: Pm25Band) {
+        val background = Color(band.backgroundArgb)
+        val foreground = if (band.darkText) Color(0xFF101010) else Color.White
+        Surface(color = background, contentColor = foreground, shape = CircleShape) {
+            Text(band.label, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium)
+        }
     }
 
     @Composable private fun Console(logs: List<String>) { SectionCard("BLE 診斷 Console", Icons.Outlined.Terminal) {
