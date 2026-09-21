@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.delay
 import java.time.*
 import java.time.format.DateTimeFormatter
 
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
     private val app get() = application as MyAirApplication
     private val db get() = app.database
     private val ble get() = app.bleManager
+    private val coordinator get() = app.measurementCoordinator
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,6 +64,7 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable private fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
         val state by ble.state.collectAsState()
+        val queueState by coordinator.state.collectAsState()
         var page by remember { mutableStateOf(AppPage.OVERVIEW) }
         var granted by remember { mutableStateOf(hasPermissions()) }
         var disconnectAlert by remember { mutableStateOf(SettingsStore.disconnectAlert(this)) }
@@ -70,6 +73,10 @@ class MainActivity : ComponentActivity() {
         var monthPoints by remember { mutableStateOf(emptyList<ReportPoint>()) }
         var exportChoice by remember { mutableStateOf<Boolean?>(null) }
         var showExportDialog by remember { mutableStateOf(false) }
+        var showScheduleDialog by remember { mutableStateOf(false) }
+        var localSchedule by remember { mutableStateOf(db.localSchedule()) }
+        var customDelay by remember { mutableStateOf("") }
+        var dailyTime by remember { mutableStateOf("08:00") }
 
         val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted = hasPermissions() }
         val diagnosticExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -89,6 +96,12 @@ class MainActivity : ComponentActivity() {
                 val bounds = reportBounds()
                 todayPoints = db.reportPoints(bounds.first, bounds.second)
                 monthPoints = db.reportPoints(bounds.third, bounds.second)
+            }
+        }
+        LaunchedEffect(Unit) {
+            while (true) {
+                localSchedule = db.localSchedule()
+                delay(5_000)
             }
         }
 
@@ -117,7 +130,10 @@ class MainActivity : ComponentActivity() {
                 AppPage.CONNECTION -> ConnectionPage(Modifier.padding(padding), state, granted, disconnectAlert,
                     requestPermissions = { permissions.launch(requiredPermissions()) },
                     onDisconnectAlert = { disconnectAlert = it; SettingsStore.setDisconnectAlert(this, it) })
-                AppPage.MEASUREMENT -> MeasurementPage(Modifier.padding(padding), state) { diagnosticExport.launch("myair-s1-diagnostic.json") }
+                AppPage.MEASUREMENT -> MeasurementPage(Modifier.padding(padding), state, queueState, localSchedule,
+                    openSchedule = { showScheduleDialog = true },
+                    cancelSchedule = { db.cancelSchedule(); localSchedule = null },
+                    exportDiagnostic = { diagnosticExport.launch("myair-s1-diagnostic.json") })
                 AppPage.REPORT -> ReportPage(Modifier.padding(padding), todayPoints, monthPoints) { showExportDialog = true }
                 AppPage.DEVICE -> DevicePage(Modifier.padding(padding), state, themeMode, onThemeChanged)
             }
@@ -128,6 +144,35 @@ class MainActivity : ComponentActivity() {
             text = { Text("請選擇 CSV 的資料範圍") },
             confirmButton = { TextButton(onClick = { showExportDialog = false; exportChoice = false; csvExport.launch("myair-s1-today.csv") }) { Text("單日") } },
             dismissButton = { TextButton(onClick = { showExportDialog = false; exportChoice = true; csvExport.launch("myair-s1-30-days.csv") }) { Text("近 30 日") } }
+        )
+        if (showScheduleDialog) AlertDialog(
+            onDismissRequest = { showScheduleDialog = false },
+            icon = { Icon(Icons.Outlined.Schedule, contentDescription = null) },
+            title = { Text("設定本地定時量測") },
+            text = { LazyColumn(Modifier.heightIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item { Text("排程只會在背景連線服務運作且裝置已連線時派發。斷線後會在 10 分鐘寬限內持續重連，忙碌時依序排入佇列。") }
+                item { Text("一次性", style = MaterialTheme.typography.titleSmall) }
+                listOf(5, 15, 30).forEach { minutes -> item {
+                    OutlinedButton(onClick = { localSchedule = db.saveOnceSchedule(minutes); startBackground(); showScheduleDialog = false }, modifier = Modifier.fillMaxWidth()) { Text("$minutes 分鐘後量測一次") }
+                } }
+                item {
+                    OutlinedTextField(value = customDelay, onValueChange = { customDelay = it.filter(Char::isDigit).take(4) }, label = { Text("自訂幾分鐘後") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
+                item {
+                    Button(onClick = { customDelay.toIntOrNull()?.takeIf { it >= 1 }?.let { localSchedule = db.saveOnceSchedule(it); startBackground(); showScheduleDialog = false } }, enabled = (customDelay.toIntOrNull() ?: 0) >= 1, modifier = Modifier.fillMaxWidth()) { Text("建立自訂一次性排程") }
+                }
+                item { Text("週期性", style = MaterialTheme.typography.titleSmall) }
+                listOf(15, 30, 60, 120, 240).forEach { minutes -> item {
+                    OutlinedButton(onClick = { localSchedule = db.saveIntervalSchedule(minutes); startBackground(); showScheduleDialog = false }, modifier = Modifier.fillMaxWidth()) { Text("每 $minutes 分鐘量測") }
+                } }
+                item { Text("每日固定時間", style = MaterialTheme.typography.titleSmall) }
+                item { OutlinedTextField(value = dailyTime, onValueChange = { dailyTime = it.take(5) }, label = { Text("24 小時制 HH:mm") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+                item {
+                    val parts = dailyTime.split(":"); val hour = parts.getOrNull(0)?.toIntOrNull(); val minute = parts.getOrNull(1)?.toIntOrNull()
+                    Button(onClick = { if (hour != null && minute != null) { localSchedule = db.saveDailySchedule(hour * 60 + minute); startBackground(); showScheduleDialog = false } }, enabled = hour != null && minute != null && hour in 0..23 && minute in 0..59, modifier = Modifier.fillMaxWidth()) { Text("建立每日排程") }
+                }
+            } },
+            confirmButton = { TextButton(onClick = { showScheduleDialog = false }) { Text("關閉") } }
         )
     }
 
@@ -186,12 +231,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Composable private fun MeasurementPage(modifier: Modifier, state: UiState, exportDiagnostic: () -> Unit) = Page(modifier) {
+    @Composable private fun MeasurementPage(
+        modifier: Modifier,
+        state: UiState,
+        queueState: MeasurementQueueState,
+        schedule: LocalSchedule?,
+        openSchedule: () -> Unit,
+        cancelSchedule: () -> Unit,
+        exportDiagnostic: () -> Unit
+    ) = Page(modifier) {
         SectionCard("量測操作", Icons.Outlined.Air) {
-            Button(onClick = { ble.measure() }, enabled = state.connected && !state.busy, modifier = Modifier.fillMaxWidth()) { Text("立即量測") }
+            Button(onClick = { coordinator.request(MeasurementRequest(MeasurementOrigin.MANUAL)) }, enabled = state.connected && !state.historySyncing, modifier = Modifier.fillMaxWidth()) { Text("立即量測") }
             OutlinedButton(onClick = { ble.syncTime() }, enabled = state.connected && !state.busy, modifier = Modifier.fillMaxWidth()) { Text("同步裝置時間") }
+            OutlinedButton(onClick = { ble.syncHistoryReadOnly() }, enabled = state.connected && !state.busy && !state.historySyncing, modifier = Modifier.fillMaxWidth()) {
+                Text(if (state.historySyncing) "同步裝置紀錄中…" else "同步裝置紀錄（唯讀）")
+            }
             OutlinedButton(onClick = exportDiagnostic, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.FileDownload, null); Spacer(Modifier.width(8.dp)); Text("匯出診斷") }
         }
+        SectionCard("任務與排程", Icons.Outlined.Schedule) {
+            val current = queueState.current
+            Text(current?.let { "執行中：${it.label}" } ?: "目前沒有執行中的量測", style = MaterialTheme.typography.titleMedium)
+            Text("等待中的任務：${queueState.pending.size} / ${MeasurementCoordinator.MAX_PENDING}", style = MaterialTheme.typography.bodySmall)
+            schedule?.let {
+                val format = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss").withZone(ZoneId.systemDefault())
+                Text(when (it.mode) {
+                    LocalScheduleMode.ONCE -> "一次性排程"
+                    LocalScheduleMode.INTERVAL -> "每 ${it.intervalMinutes} 分鐘"
+                    LocalScheduleMode.DAILY -> "每天 %02d:%02d".format((it.localMinuteOfDay ?: 0) / 60, (it.localMinuteOfDay ?: 0) % 60)
+                })
+                Text("下次派發：${format.format(Instant.ofEpochMilli(it.nextRunAt))}", style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = cancelSchedule, modifier = Modifier.fillMaxWidth()) { Text("取消排程") }
+            } ?: Button(onClick = openSchedule, modifier = Modifier.fillMaxWidth()) { Text("設定定時量測") }
+            Text("排程派發後會先保存下一次時間；不會因前一項任務仍在執行而重設。", style = MaterialTheme.typography.bodySmall)
+        }
+        state.historyStatus?.let { SectionCard("裝置紀錄", Icons.Outlined.History) { Text(it) } }
         state.latestSession?.let { MeasurementResult(it) } ?: state.latest?.let { LiveResult(it) }
         Console(state.logs)
     }

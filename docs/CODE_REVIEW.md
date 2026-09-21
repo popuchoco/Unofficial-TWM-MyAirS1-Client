@@ -1,5 +1,20 @@
 # Code Review 紀錄
 
+## 2026-09-21：本地排程與唯讀歷史同步
+
+- 手動與 Timer 統一由 `MeasurementCoordinator` FIFO 派發，等待上限 8 筆；量測完成、失敗或 60 秒逾時才釋放下一筆。
+- Timer 成功進入佇列後才更新 SQLite 的下一次時間，避免 busy 時被覆蓋；每筆 Timer 帶 expiry，超過 10 分鐘寬限不補做。
+- 一次性、週期性與每日排程都保存於 SQLite；手機開機後只有仍存在排程時才啟動服務。
+- 歷史同步只送出讀取起始命令，未加入清除命令；checksum 或解析失敗保留裝置端資料。
+- 移除 `raw_hex UNIQUE` 單一去重，改由不透明裝置 ID 與事件欄位建立 SHA-256 fingerprint。
+- `remote_command` 只作型別擴充點；沒有遠端命令 API、Realtime、FCM 或控制憑證。
+
+### 保留風險
+
+- 歷史封包格式來自既有相容性資料，仍須以目前裝置韌體實測確認。
+- Android／廠牌省電政策可能限制開機啟動或長時間 Foreground Service，不能視為硬即時排程。
+- 目前只有一個有效本地排程 slot；建立新排程會明確取代舊排程，多排程功能留待後續版本。
+
 ## 2026-09-21：v0.3.0 UI／報告
 
 - 報告只查詢已完成的 `measurement_sessions`，今日圖使用 session 平均、30 日圖使用每日平均。

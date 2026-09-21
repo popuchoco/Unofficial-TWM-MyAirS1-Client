@@ -1,6 +1,7 @@
 package com.kerberosclaw.myairs1
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 import java.time.Instant
 import java.time.ZoneId
@@ -25,5 +26,16 @@ class ProtocolTest {
             Instant.parse("2026-09-21T02:03:04Z"), ZoneId.of("Asia/Taipei")
         )
         assertEquals("00100B00000001EA070915020304010800", with(S1Protocol) { command.hexString() })
+    }
+
+    @Test fun reassemblesReadOnlyHistoryPackets() {
+        val record = byteArrayOf(1, 0, 0, 0, 0, 0, 8, 0, 1, 2, 80, 7, 0, 1, 10, 0, 20, 0)
+        val first = byteArrayOf(0, 0, 0, 18, 0, 0, 0, 0) + record.copyOfRange(0, 12)
+        val second = byteArrayOf(0, 0, 0) + record.copyOfRange(12, 18)
+        val batch = S1Protocol.parseHistoryPackets(listOf(first, second))
+        assertEquals(18, batch.declaredBytes)
+        assertEquals(0, batch.checksumStatus)
+        assertEquals(1, batch.records.size)
+        assertArrayEquals(record, batch.records.single())
     }
 }

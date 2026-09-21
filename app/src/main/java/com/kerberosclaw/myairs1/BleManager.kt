@@ -15,6 +15,7 @@ data class UiState(
     val backgroundEnabled: Boolean = false, val latest: Measurement? = null,
     val latestSession: SessionSummary? = null, val firmwareVersion: String? = null,
     val deviceModel: String? = null, val hardwareVersion: String? = null, val deviceProtocolVersion: String? = null,
+    val historySyncing: Boolean = false, val historyStatus: String? = null,
     val logs: List<String> = emptyList()
 )
 
@@ -32,7 +33,27 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     private var operationRunning = false
     @Volatile private var autoReconnect = false
     private var reconnectAttempt = 0
+    private var activeRequest: MeasurementRequest? = null
+    private var measurementFinished: (() -> Unit)? = null
+    private val historyPackets = mutableListOf<ByteArray>()
+    private var historyPacketsRemaining: Int? = null
+    private var queueReadyCallback: (() -> Unit)? = null
     private val finishMeasurement = Runnable { finishSession() }
+    private val measurementTimeout = Runnable {
+        if (activeRequest != null) {
+            log("${activeRequest?.label ?: "量測"}逾時，派發下一項任務")
+            synchronized(sessionLock) { sessionSamples.clear() }
+            mutable.value = mutable.value.copy(phase = "量測逾時", busy = false)
+            finishActiveRequest()
+        }
+    }
+    private val historyTimeout = Runnable {
+        if (mutable.value.historySyncing) {
+            historyPackets.clear(); historyPacketsRemaining = null
+            mutable.value = mutable.value.copy(historySyncing = false, historyStatus = "歷史同步逾時；裝置端資料未清除")
+            log("歷史同步逾時；裝置端資料未清除")
+        }
+    }
     private val reconnect = Runnable { if (autoReconnect && !mutable.value.connected) connectPreferredOrScan() }
     private val connectionTimeout = Runnable {
         if (mutable.value.connecting) {
@@ -59,6 +80,13 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         db.addEvent("ble", message)
         mutable.value = mutable.value.copy(logs = (listOf("${java.time.LocalTime.now().withNano(0)}  $message") + mutable.value.logs).take(100))
     }
+
+    fun recordSkipped(request: MeasurementRequest, reason: String) {
+        db.addEvent("measurement_skipped", "${request.origin.wireName}:${request.requestId}:$reason")
+        log("${request.label}未執行：$reason")
+    }
+
+    fun setQueueReadyCallback(callback: () -> Unit) { queueReadyCallback = callback }
 
     fun startAutoReconnect() { autoReconnect = true; mutable.value = mutable.value.copy(backgroundEnabled = true); connectPreferredOrScan() }
     fun stopAutoReconnect() { autoReconnect = false; handler.removeCallbacks(reconnect); mutable.value = mutable.value.copy(backgroundEnabled = false) }
@@ -123,8 +151,13 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
                 log("GATT 已連線（status=$status），開始讀取服務"); g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 handler.removeCallbacks(connectionTimeout)
-                finishSession(); mutable.value = mutable.value.copy(phase = "已斷線，等待重新連線", connecting = false, connected = false, busy = false)
+                handler.removeCallbacks(finishMeasurement); handler.removeCallbacks(measurementTimeout); handler.removeCallbacks(historyTimeout)
+                synchronized(sessionLock) { sessionSamples.clear() }
+                mutable.value = mutable.value.copy(phase = "已斷線，等待重新連線", connecting = false, connected = false, busy = false,
+                    historySyncing = false, historyStatus = if (mutable.value.historySyncing) "歷史同步因斷線中止；裝置端資料未清除" else mutable.value.historyStatus)
+                activeRequest?.let { recordSkipped(it, "BLE 連線中斷") }
                 operationRunning = false; opQueue.clear(); log("GATT 已斷線（status=$status）"); g.close()
+                finishActiveRequest()
                 if (gatt === g) gatt = null
                 scheduleReconnect()
             }
@@ -137,6 +170,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             mutable.value = mutable.value.copy(phase = "已連線，可開始量測", connecting = false, connected = true)
             enableNotify(g, service.getCharacteristic(S1Protocol.SENSOR_MEASUREMENT)); enableNotify(g, service.getCharacteristic(S1Protocol.CONTROL_POINT))
             readFirmwareVersion(g)
+            queueReadyCallback?.invoke()
         }
         @Deprecated("Deprecated in API 33") override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) = receive(c.uuid, c.value)
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) = receive(c.uuid, value)
@@ -151,6 +185,14 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
 
     private fun receive(uuid: java.util.UUID, value: ByteArray) {
         val raw = with(S1Protocol) { value.hexString() }; log("notify $uuid (${value.size} bytes): $raw")
+        if (uuid == S1Protocol.CONTROL_POINT) {
+            receiveControlPoint(raw)
+            return
+        }
+        if (uuid == S1Protocol.SYNC_MEASUREMENT) {
+            receiveHistoryPacket(value)
+            return
+        }
         if (uuid != S1Protocol.SENSOR_MEASUREMENT || value.size < 18) return
         runCatching { S1Protocol.parse(value) }.onSuccess { measurement ->
             db.addMeasurement(measurement)
@@ -186,14 +228,19 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
 
     private fun finishSession() {
         handler.removeCallbacks(finishMeasurement)
+        handler.removeCallbacks(measurementTimeout)
         val samples = synchronized(sessionLock) {
             sessionSamples.toList().also { sessionSamples.clear() }
         }
         if (samples.isEmpty()) return
-        val summary = db.completeSession(samples) ?: return
+        val request = activeRequest
+        val summary = db.completeSession(samples, request?.origin ?: MeasurementOrigin.MANUAL, request?.requestId) ?: run {
+            finishActiveRequest(); return
+        }
         mutable.value = mutable.value.copy(phase = "量測完成", busy = false, latest = summary.latest, latestSession = summary)
         log("量測串流完成：${summary.sampleCount} 筆，平均 PM2.5 ${"%.1f".format(summary.averagePm25)} µg/m³")
         OutboxScheduler.enqueue(context)
+        finishActiveRequest()
     }
 
     private fun scheduleReconnect() {
@@ -213,11 +260,84 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         }
     }
 
-    fun measure() {
-        val g = gatt ?: run { log("尚未連線"); return }
-        val c = g.getService(S1Protocol.MEASUREMENT_SERVICE)?.getCharacteristic(S1Protocol.CONTROL_POINT) ?: run { log("Control point 不存在"); return }
-        finishSession(); mutable.value = mutable.value.copy(phase = "量測中…", busy = true)
-        enqueue { write(g, c, S1Protocol.MEASURE_COMMAND, "量測") }
+    fun measure(request: MeasurementRequest, onFinished: () -> Unit): Boolean {
+        if (!mutable.value.connected) return false
+        val g = gatt ?: run { log("${request.label}等待失敗：尚未連線"); return false }
+        val c = g.getService(S1Protocol.MEASUREMENT_SERVICE)?.getCharacteristic(S1Protocol.CONTROL_POINT) ?: run { log("Control point 不存在"); return false }
+        if (activeRequest != null || mutable.value.busy) return false
+        finishSession()
+        activeRequest = request
+        measurementFinished = onFinished
+        mutable.value = mutable.value.copy(phase = "量測中…", busy = true)
+        enqueue { write(g, c, S1Protocol.MEASURE_COMMAND, request.label) }
+        handler.postDelayed(measurementTimeout, 60_000)
+        return true
+    }
+
+    private fun finishActiveRequest() {
+        activeRequest = null
+        measurementFinished?.also { measurementFinished = null }?.invoke()
+    }
+
+    fun syncHistoryReadOnly(): Boolean {
+        val g = gatt ?: run { log("尚未連線，無法同步裝置紀錄"); return false }
+        if (mutable.value.busy || mutable.value.historySyncing) { log("目前有任務執行中，稍後再同步裝置紀錄"); return false }
+        val service = g.getService(S1Protocol.MEASUREMENT_SERVICE)
+        val sync = service?.getCharacteristic(S1Protocol.SYNC_MEASUREMENT) ?: run { log("裝置沒有歷史同步 characteristic"); return false }
+        val control = service.getCharacteristic(S1Protocol.CONTROL_POINT) ?: run { log("Control point 不存在"); return false }
+        historyPackets.clear(); historyPacketsRemaining = null
+        mutable.value = mutable.value.copy(historySyncing = true, historyStatus = "正在要求裝置歷史紀錄…")
+        enableNotify(g, sync)
+        enqueue { write(g, control, S1Protocol.HISTORY_SYNC_START_COMMAND, "唯讀歷史同步") }
+        handler.postDelayed(historyTimeout, 60_000)
+        return true
+    }
+
+    private fun receiveControlPoint(raw: String) {
+        if (!mutable.value.historySyncing || raw.length < 20) return
+        if (raw.substring(12, 14) != "21" || raw.substring(4, 6) != "04") return
+        val countHex = raw.substring(16, 20)
+        val count = countHex.substring(2, 4).plus(countHex.substring(0, 2)).toIntOrNull(16) ?: return
+        historyPacketsRemaining = count
+        mutable.value = mutable.value.copy(historyStatus = if (count == 0) "裝置沒有待同步紀錄" else "正在接收歷史資料（$count 個封包）")
+        log("裝置歷史同步預計接收 $count 個封包")
+        if (count == 0) finishHistorySync(emptyList())
+    }
+
+    private fun receiveHistoryPacket(value: ByteArray) {
+        val remaining = historyPacketsRemaining ?: return
+        if (!mutable.value.historySyncing || remaining <= 0) return
+        historyPackets += value.copyOf()
+        historyPacketsRemaining = remaining - 1
+        mutable.value = mutable.value.copy(historyStatus = "正在接收歷史資料（${historyPackets.size}/${historyPackets.size + remaining - 1}）")
+        if (remaining == 1) finishHistorySync(historyPackets.toList())
+    }
+
+    private fun finishHistorySync(packets: List<ByteArray>) {
+        handler.removeCallbacks(historyTimeout)
+        if (packets.isEmpty()) {
+            mutable.value = mutable.value.copy(historySyncing = false)
+            return
+        }
+        runCatching { S1Protocol.parseHistoryPackets(packets) }.onSuccess { batch ->
+            if (batch.checksumStatus != 0) error("checksum status=${batch.checksumStatus}")
+            var imported = 0
+            batch.records.forEach { record ->
+                val epoch = java.nio.ByteBuffer.wrap(record, 2, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xffffffffL
+                val deviceIdHash = HistoryFingerprint.opaqueDeviceId(mutable.value.address)
+                if (db.importHistoryMeasurement(S1Protocol.parse(record, epoch * 1000L), deviceIdHash) != null) imported++
+            }
+            val duplicates = batch.records.size - imported
+            val status = "歷史同步完成：新增 $imported 筆、略過 $duplicates 筆重複資料；裝置端資料未清除"
+            mutable.value = mutable.value.copy(historySyncing = false, historyStatus = status)
+            log(status)
+            if (imported > 0) OutboxScheduler.enqueue(context)
+        }.onFailure { error ->
+            val status = "歷史同步失敗：${error.message}；裝置端資料未清除"
+            mutable.value = mutable.value.copy(historySyncing = false, historyStatus = status)
+            log(status)
+        }
+        historyPackets.clear(); historyPacketsRemaining = null
     }
     fun syncTime() {
         val g = gatt ?: run { log("尚未連線"); return }
@@ -238,6 +358,8 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         handler.removeCallbacks(scanTimeout)
         handler.removeCallbacks(connectionTimeout)
         handler.removeCallbacks(finishMeasurement)
+        handler.removeCallbacks(measurementTimeout)
+        handler.removeCallbacks(historyTimeout)
         adapter?.bluetoothLeScanner?.stopScan(scanCallback)
         gatt?.disconnect()
     }

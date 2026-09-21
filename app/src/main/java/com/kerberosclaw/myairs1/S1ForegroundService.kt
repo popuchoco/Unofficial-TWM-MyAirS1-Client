@@ -6,6 +6,7 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 class S1ForegroundService : LifecycleService() {
     private val app get() = application as MyAirApplication
@@ -25,6 +26,12 @@ class S1ForegroundService : LifecycleService() {
             if (wasConnected && !state.connected && !suppressDisconnectAlert && SettingsStore.disconnectAlert(this@S1ForegroundService)) notifyDisconnected()
             wasConnected = state.connected
         } }
+        lifecycleScope.launch {
+            while (true) {
+                dispatchDueSchedule()
+                delay(5_000)
+            }
+        }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
@@ -36,6 +43,30 @@ class S1ForegroundService : LifecycleService() {
         app.bleManager.startAutoReconnect(); return START_STICKY
     }
     override fun onDestroy() { app.bleManager.stopAutoReconnect(); super.onDestroy() }
+    private fun dispatchDueSchedule() {
+        val schedule = app.database.localSchedule() ?: return
+        val now = System.currentTimeMillis()
+        val bleState = app.bleManager.state.value
+        if (schedule.nextRunAt > now) return
+        if (now > schedule.nextRunAt + schedule.graceMinutes * 60_000L) {
+            app.database.markScheduleMissed(schedule, if (!bleState.connected) "BLE 未在寬限時間內恢復連線" else "任務未在寬限時間內派發", now)
+            return
+        }
+        if (!bleState.connected || bleState.historySyncing) return
+        val request = MeasurementRequest(
+            origin = MeasurementOrigin.LOCAL_TIMER,
+            requestId = "schedule:${schedule.id}:${schedule.nextRunAt}",
+            label = when (schedule.mode) {
+                LocalScheduleMode.ONCE -> "一次性定時量測"
+                LocalScheduleMode.INTERVAL -> "週期定時量測"
+                LocalScheduleMode.DAILY -> "每日定時量測"
+            },
+            expiresAt = schedule.nextRunAt + schedule.graceMinutes * 60_000L
+        )
+        if (app.measurementCoordinator.request(request)) {
+            app.database.markScheduleDispatched(schedule, now)
+        }
+    }
     private fun updateNotification(text: String) = getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
     private fun notifyDisconnected() {
         val open = PendingIntent.getActivity(this, 2, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)

@@ -44,3 +44,13 @@
 v0.2.1 修正完成後另執行乾淨建置、protocol／空氣品質級距／session calculator JVM tests 與 Debug APK 組裝，全部通過。session calculator 測試刻意以亂序樣本輸入，確認結果會按接收時間決定起訖與最後值，並使用區間內全部樣本計算平均。
 
 v0.3.0 新增 Device Information parser 測試，使用 14-byte 範例核對 Protocol、Model、Software/Firmware 與 Hardware revision。完整 JVM suite 共 6 項測試，0 failure／0 error；configured Debug APK 組裝成功。圖表、CSV 文件選擇器、通知及實機版本欄位仍需以本版 APK 進行下一輪手機 UI 驗收。
+
+## 本地排程與唯讀歷史同步（待實機驗收）
+
+- JVM 測試已涵蓋歷史封包重組與每日固定時間的同日／跨日計算。
+- `testDebugUnitTest` 與 `assembleDebug` 已通過。
+- 程式碼確認未定義或送出裝置歷史清除命令。
+- 歷史資料改用裝置不透明雜湊、序號、裝置時間、trigger 與內容 checksum 的事件指紋去重。
+- 排程保存於 SQLite，Boot Receiver 只在仍有排程時恢復 Foreground Service。
+- 尚待實機確認：歷史封包邊界、checksum status、裝置容量、重複匯入、手機重開機、10 分鐘斷線寬限與各廠牌省電策略。
+- 本輪沒有實作或驗證 Supabase 遠端觸發。
