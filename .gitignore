@@ -13,3 +13,6 @@
 /project.7z
 *.apk.orig
 *.log
+/bridge/.env
+/bridge/latest-measurement.json
+/supabase/.temp/
