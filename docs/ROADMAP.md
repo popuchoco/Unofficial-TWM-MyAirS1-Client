@@ -17,7 +17,7 @@
 - [x] Foreground Service 與斷線自動重連
 - [ ] 可設定的定時量測
 - [ ] 裝置歷史資料同步與完整性檢查
-- [ ] CSV 匯出
+- [x] 今日／近 30 日 CSV 匯出
 - [x] 30 天資料保留政策
 - [x] 非破壞性 SQLite migrations
 
@@ -29,4 +29,8 @@
 - [ ] Home Assistant sensor integration
 - [ ] Node-RED flow example
 - [ ] 裝置狀態與空氣品質 dashboard
+- [x] 今日與近 30 日量測圖表
+- [x] Material 3 五分頁及深淺色模式
+- [x] BLE 斷線通知
+- [x] 裝置版本資訊讀取
 - [ ] 使用者主動設定站點的民間空氣地圖 adapter（不預設蒐集 GPS）

@@ -20,6 +20,17 @@ data class SessionSummary(
 
 data class OutboxItem(val id: Long, val payload: String, val attempts: Int)
 
+data class ReportPoint(
+    val startedAt: Long,
+    val endedAt: Long,
+    val sampleCount: Int,
+    val latestPm25: Int,
+    val batteryPercent: Int,
+    val averagePm25: Double,
+    val averageTemperatureC: Double,
+    val averageHumidityPercent: Double
+)
+
 object SessionCalculator {
     fun summarize(samples: List<Measurement>, eventId: String = UUID.randomUUID().toString()): SessionSummary? {
         if (samples.isEmpty()) return null
@@ -111,6 +122,21 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "myair-s1.db", n
 
     fun pendingOutboxCount(): Int = readableDatabase.rawQuery("SELECT count(*) FROM outbox WHERE delivered_at IS NULL", null)
         .use { c -> c.moveToFirst(); c.getInt(0) }
+
+    fun reportPoints(startInclusive: Long, endExclusive: Long): List<ReportPoint> = readableDatabase.rawQuery(
+        "SELECT started_at,ended_at,sample_count,latest_pm25,latest_battery,average_pm25,average_temperature,average_humidity FROM measurement_sessions WHERE ended_at>=? AND ended_at<? ORDER BY ended_at",
+        arrayOf(startInclusive.toString(), endExclusive.toString())
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) add(ReportPoint(
+                startedAt = cursor.getLong(0), endedAt = cursor.getLong(1), sampleCount = cursor.getInt(2),
+                latestPm25 = cursor.getInt(3), batteryPercent = cursor.getInt(4), averagePm25 = cursor.getDouble(5),
+                averageTemperatureC = cursor.getDouble(6), averageHumidityPercent = cursor.getDouble(7)
+            ))
+        }
+    }
+
+    fun latestReportPoint(): ReportPoint? = reportPoints(0, Long.MAX_VALUE).lastOrNull()
 
     fun pruneOlderThan30Days(now: Long = System.currentTimeMillis()) {
         val cutoff = now - 30L * 24 * 60 * 60 * 1000

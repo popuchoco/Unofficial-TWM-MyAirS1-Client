@@ -1,5 +1,14 @@
 # Code Review 紀錄
 
+## 2026-09-21：v0.3.0 UI／報告
+
+- 報告只查詢已完成的 `measurement_sessions`，今日圖使用 session 平均、30 日圖使用每日平均。
+- CSV 由 Android 文件選擇器寫入，不要求廣泛儲存權限。
+- 斷線通知只在 Foreground Service 曾經連線後意外中斷時發送；使用者主動停止時抑制提醒。
+- 通知權限與 BLE 權限判定分離，拒絕通知不會阻止前景 BLE 量測。
+- 裝置版本優先讀取已知相容的自訂 Device Information characteristic，標準 Firmware Revision 僅作 fallback。
+- Theme、斷線提醒偏好只保存在 App 私有 SharedPreferences。
+
 ## 2026-09-21：v0.2.1
 
 檢視範圍：BLE/GATT lifecycle、session 邊界與平均、SQLite migration／outbox、WorkManager retry、Supabase Edge Functions、權限與機密資料邊界。

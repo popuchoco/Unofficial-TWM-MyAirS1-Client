@@ -13,7 +13,9 @@ data class UiState(
     val phase: String = "尚未掃描", val deviceName: String? = null, val address: String? = null,
     val scanning: Boolean = false, val connecting: Boolean = false, val connected: Boolean = false, val busy: Boolean = false,
     val backgroundEnabled: Boolean = false, val latest: Measurement? = null,
-    val latestSession: SessionSummary? = null, val logs: List<String> = emptyList()
+    val latestSession: SessionSummary? = null, val firmwareVersion: String? = null,
+    val deviceModel: String? = null, val hardwareVersion: String? = null, val deviceProtocolVersion: String? = null,
+    val logs: List<String> = emptyList()
 )
 
 @SuppressLint("MissingPermission")
@@ -134,11 +136,17 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             handler.removeCallbacks(connectionTimeout)
             mutable.value = mutable.value.copy(phase = "已連線，可開始量測", connecting = false, connected = true)
             enableNotify(g, service.getCharacteristic(S1Protocol.SENSOR_MEASUREMENT)); enableNotify(g, service.getCharacteristic(S1Protocol.CONTROL_POINT))
+            readFirmwareVersion(g)
         }
         @Deprecated("Deprecated in API 33") override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) = receive(c.uuid, c.value)
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) = receive(c.uuid, value)
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) { log("通知設定 ${descriptor.characteristic.uuid} status=$status"); operationDone() }
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) { log("寫入 ${characteristic.uuid} status=$status"); operationDone() }
+        @Deprecated("Deprecated in API 33")
+        override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) =
+            receiveRead(characteristic.uuid, characteristic.value, status)
+        override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) =
+            receiveRead(characteristic.uuid, value, status)
     }
 
     private fun receive(uuid: java.util.UUID, value: ByteArray) {
@@ -150,6 +158,30 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             mutable.value = mutable.value.copy(phase = "正在接收量測串流…", latest = measurement, busy = true)
             handler.removeCallbacks(finishMeasurement); handler.postDelayed(finishMeasurement, 2_500)
         }.onFailure { error -> mutable.value = mutable.value.copy(phase = "封包解析失敗：${error.message}", busy = false) }
+    }
+
+    private fun receiveRead(uuid: java.util.UUID, value: ByteArray, status: Int) {
+        if (uuid == S1Protocol.VERSION_CHARACTERISTIC && status == BluetoothGatt.GATT_SUCCESS) {
+            runCatching { S1Protocol.parseDeviceVersion(value) }.onSuccess { version ->
+                mutable.value = mutable.value.copy(firmwareVersion = version.firmwareVersion, deviceModel = version.modelName,
+                    hardwareVersion = version.hardwareVersion, deviceProtocolVersion = version.protocolVersion)
+                log("已讀取裝置版本資訊")
+            }.onFailure { log("裝置版本資料無法解析：${it.message}") }
+        } else if (uuid == S1Protocol.STANDARD_FIRMWARE_REVISION && status == BluetoothGatt.GATT_SUCCESS) {
+            val version = value.toString(Charsets.UTF_8).trim().trim('\u0000').ifBlank { null }
+            mutable.value = mutable.value.copy(firmwareVersion = version)
+            log(if (version == null) "裝置未提供韌體版本" else "已讀取韌體版本")
+        }
+        operationDone()
+    }
+
+    private fun readFirmwareVersion(g: BluetoothGatt) {
+        val characteristic = g.getService(S1Protocol.DEVICE_INFORMATION_SERVICE)?.getCharacteristic(S1Protocol.VERSION_CHARACTERISTIC)
+            ?: g.getService(S1Protocol.STANDARD_DEVICE_INFORMATION_SERVICE)?.getCharacteristic(S1Protocol.STANDARD_FIRMWARE_REVISION)
+        if (characteristic == null) { mutable.value = mutable.value.copy(firmwareVersion = null); log("裝置未提供標準韌體版本欄位"); return }
+        enqueue {
+            if (!g.readCharacteristic(characteristic)) { log("無法讀取韌體版本"); operationDone() }
+        }
     }
 
     private fun finishSession() {

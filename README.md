@@ -6,6 +6,12 @@
 
 > 本專案與台灣大哥大及原廠 App 開發者無關；產品名稱與商標分屬其權利人所有。
 
+## 裝置規格摘要
+
+- PM2.5 量測範圍：`0–500 µg/m³`。
+- 無線連線：Bluetooth Low Energy 4.2。
+- BLE 工作頻率：`2402–2480 MHz`。
+
 ## 目前功能
 
 - 掃描並連線 myAir S1。
@@ -20,6 +26,11 @@
 - Foreground Service、偏好裝置與斷線指數退避自動重連。
 - SQLite transactional outbox、HTTPS 認證、重試與 30 天本機資料留存。
 - 可選用 Supabase Edge Functions 提供受保護的上傳及最新量測唯讀 API。
+- Material 3 五分頁介面，提供總覽、連線、量測、報告與裝置資訊。
+- 今日 session 與近 30 日每日平均折線圖，以及單日／近 30 日 CSV 匯出。
+- 可切換跟隨系統、淺色與深色模式。
+- 可開關的 BLE 斷線提醒通知。
+- 讀取裝置 Protocol、Model、Software/Firmware 與 Hardware revision。
 - Android 12 以上使用 Nearby devices 權限，不蒐集手機定位。
 
 ## 專案狀態
@@ -61,6 +72,7 @@ Android Client
 - [Supabase 與 Agent bridge 設定](docs/API_SETUP.md)
 - [實機與 Supabase 驗證紀錄](docs/VALIDATION.md)
 - [Code Review 紀錄](docs/CODE_REVIEW.md)
+- [v0.3 Modern UI 與功能設計](docs/UI_DESIGN.md)
 
 ## 開發環境
 

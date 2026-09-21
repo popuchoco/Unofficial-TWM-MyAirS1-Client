@@ -12,6 +12,10 @@ object S1Protocol {
     val CONTROL_POINT: UUID = UUID.fromString("46494854-4443-5365-7276-696365030001")
     val SENSOR_MEASUREMENT: UUID = UUID.fromString("46494854-4443-5365-7276-696365030002")
     val SYNC_MEASUREMENT: UUID = UUID.fromString("46494854-4443-5365-7276-696365030003")
+    val DEVICE_INFORMATION_SERVICE: UUID = UUID.fromString("46494854-4443-5365-7276-696365010000")
+    val VERSION_CHARACTERISTIC: UUID = UUID.fromString("46494854-4443-5365-7276-696365010001")
+    val STANDARD_DEVICE_INFORMATION_SERVICE: UUID = UUID.fromString("0000180a-0000-1000-8000-00805f9b34fb")
+    val STANDARD_FIRMWARE_REVISION: UUID = UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     val MEASURE_COMMAND: ByteArray = hex("001503000000011001")
 
@@ -61,7 +65,22 @@ object S1Protocol {
             rawHex = packet.copyOfRange(0, 18).hexString()
         )
     }
+
+    fun parseDeviceVersion(value: ByteArray): DeviceVersion {
+        require(value.size >= 14) { "版本資料不足 14 bytes：${value.size}" }
+        fun dotted(bytes: ByteArray): String = bytes.hexString().let { "${it.first()}.${it.drop(1)}" }
+        val hardwareRaw = value.copyOfRange(12, 14).joinToString("") { "%X".format(it.toInt() and 0xff) }
+        val stage = when (hardwareRaw.firstOrNull()) { '1' -> "EVT"; '2' -> "DVT"; '3' -> "PVT"; else -> null }
+        return DeviceVersion(
+            protocolVersion = dotted(value.copyOfRange(0, 2)),
+            modelName = value.copyOfRange(2, 10).toString(Charsets.UTF_8).trim('\u0000', ' '),
+            firmwareVersion = dotted(value.copyOfRange(10, 12)),
+            hardwareVersion = listOfNotNull(stage, hardwareRaw.getOrNull(1)?.toString()).joinToString(" ").ifBlank { hardwareRaw }
+        )
+    }
 }
+
+data class DeviceVersion(val protocolVersion: String, val modelName: String, val firmwareVersion: String, val hardwareVersion: String)
 
 data class Measurement(
     val sequence: String,

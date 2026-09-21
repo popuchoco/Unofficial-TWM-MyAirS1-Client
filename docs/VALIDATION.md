@@ -42,3 +42,5 @@
 本輪端到端流程通過。這項結果證明指定裝置與當時網路環境可正常運作，不等同所有 Android 裝置、韌體或網路條件均已覆蓋；後續版本仍需以去識別化診斷資料進行相容性驗證。
 
 v0.2.1 修正完成後另執行乾淨建置、protocol／空氣品質級距／session calculator JVM tests 與 Debug APK 組裝，全部通過。session calculator 測試刻意以亂序樣本輸入，確認結果會按接收時間決定起訖與最後值，並使用區間內全部樣本計算平均。
+
+v0.3.0 新增 Device Information parser 測試，使用 14-byte 範例核對 Protocol、Model、Software/Firmware 與 Hardware revision。完整 JVM suite 共 6 項測試，0 failure／0 error；configured Debug APK 組裝成功。圖表、CSV 文件選擇器、通知及實機版本欄位仍需以本版 APK 進行下一輪手機 UI 驗收。
