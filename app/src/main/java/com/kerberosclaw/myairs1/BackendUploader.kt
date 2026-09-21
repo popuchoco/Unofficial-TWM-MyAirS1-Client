@@ -1,22 +1,53 @@
 package com.kerberosclaw.myairs1
 
+import android.content.Context
+import androidx.work.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
-class BackendUploader {
+object BackendUploader {
     private val client = OkHttpClient()
-    fun upload(baseUrl: String, m: Measurement): Result<String> = runCatching {
-        val body = JSONObject().apply {
-            put("device_id", "myair-s1"); put("received_at", m.receivedAt); put("timestamp_utc", m.timestampUtc)
-            put("pm25_ug_m3", m.pm25); put("temperature_c", m.temperatureC); put("humidity_pct", m.humidityPercent)
-            put("battery_pct", m.batteryPercent); put("trigger", m.trigger); put("raw_hex", m.rawHex)
-        }.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-        client.newCall(Request.Builder().url(baseUrl.trimEnd('/') + "/api/v1/measurements").post(body).build()).execute().use {
-            if (!it.isSuccessful) error("HTTP ${it.code}: ${it.body?.string()}")
-            it.body?.string().orEmpty()
+    fun configured() = BuildConfig.MYAIR_API_URL.isNotBlank() && BuildConfig.MYAIR_SUPABASE_ANON_KEY.isNotBlank() && BuildConfig.MYAIR_UPLOAD_KEY.isNotBlank()
+    fun upload(payload: String): Boolean {
+        if (!configured()) return false
+        val request = Request.Builder().url(BuildConfig.MYAIR_API_URL)
+            .header("Authorization", "Bearer ${BuildConfig.MYAIR_SUPABASE_ANON_KEY}")
+            .header("apikey", BuildConfig.MYAIR_SUPABASE_ANON_KEY)
+            .header("X-MyAir-Key", BuildConfig.MYAIR_UPLOAD_KEY)
+            .post(payload.toRequestBody("application/json".toMediaType())).build()
+        return runCatching { client.newCall(request).execute().use { it.isSuccessful } }.getOrDefault(false)
+    }
+}
+
+class OutboxWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
+    override fun doWork(): Result {
+        if (!BackendUploader.configured()) return Result.success()
+        val db = (applicationContext as MyAirApplication).database
+        repeat(20) {
+            val item = db.nextOutbox() ?: return Result.success()
+            if (BackendUploader.upload(item.payload)) db.markDelivered(item.id)
+            else { db.markFailed(item.id, item.attempts); return Result.retry() }
         }
+        return if (db.pendingOutboxCount() > 0) Result.retry() else Result.success()
+    }
+}
+
+object OutboxScheduler {
+    private val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+    fun enqueue(context: Context) {
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "myair-outbox-now", ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<OutboxWorker>().setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build()
+        )
+    }
+    fun schedulePeriodic(context: Context) {
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            "myair-outbox-periodic", ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<OutboxWorker>(15, TimeUnit.MINUTES).setConstraints(constraints).build()
+        )
     }
 }

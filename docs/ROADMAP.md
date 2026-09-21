@@ -13,18 +13,20 @@
 
 ## Phase 2：可靠 datalogger
 
-- [ ] 保存偏好裝置並優先重連
-- [ ] Foreground Service 與開機後可選擇恢復
+- [x] 保存偏好裝置並優先重連
+- [x] Foreground Service 與斷線自動重連
 - [ ] 可設定的定時量測
 - [ ] 裝置歷史資料同步與完整性檢查
-- [ ] CSV 匯出與資料保留政策
-- [ ] 非破壞性 SQLite migrations
+- [ ] CSV 匯出
+- [x] 30 天資料保留政策
+- [x] 非破壞性 SQLite migrations
 
 ## Phase 3：IoT／Smart Home 整合
 
-- [ ] Transactional outbox
-- [ ] 自架 ingestion／read API
-- [ ] upload token 與 Agent read token 分離
+- [x] Transactional outbox
+- [x] Supabase ingestion／最後量測 read API 範本
+- [x] upload token 與 Agent read token 分離
 - [ ] Home Assistant sensor integration
 - [ ] Node-RED flow example
 - [ ] 裝置狀態與空氣品質 dashboard
+- [ ] 使用者主動設定站點的民間空氣地圖 adapter（不預設蒐集 GPS）

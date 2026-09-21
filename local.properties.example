@@ -1,1 +1,6 @@
 sdk.dir=C:\\path\\to\\Android\\Sdk
+
+# Optional self-hosted synchronization. Keep real values in local.properties.
+MYAIR_API_URL=
+MYAIR_SUPABASE_ANON_KEY=
+MYAIR_UPLOAD_KEY=

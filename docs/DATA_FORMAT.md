@@ -34,7 +34,7 @@ Sensor measurement notification 為 18 bytes：
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "measurements": [
     {
       "received_at": 0,
@@ -52,3 +52,33 @@ Sensor measurement notification 為 18 bytes：
 ```
 
 公開 issue 前請檢查診斷資料；事件可能包含使用者當下的裝置廣播名稱或其他環境資訊。
+
+## Measurement session payload
+
+一次量測以最後一筆 BLE 感測封包後 2.5 秒沒有新封包作為結束。平均值使用該區間內的全部樣本；`started_at`、`ended_at` 為 Unix epoch milliseconds。
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "00000000-0000-0000-0000-000000000000",
+  "device_id": "myair-s1",
+  "started_at": 0,
+  "ended_at": 0,
+  "sample_count": 1,
+  "latest": {
+    "received_at": 0,
+    "pm25_ug_m3": 0,
+    "temperature_c": 0.0,
+    "humidity_pct": 0.0,
+    "battery_pct": 0,
+    "trigger": "APP"
+  },
+  "average": {
+    "pm25_ug_m3": 0.0,
+    "temperature_c": 0.0,
+    "humidity_pct": 0.0
+  }
+}
+```
+
+此 payload 不含 GPS、經緯度或可推定位置的欄位；未來地圖 adapter 將是另行啟用的擴充。

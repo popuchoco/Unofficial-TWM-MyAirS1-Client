@@ -15,21 +15,27 @@
 - 提供可獨立捲動的 BLE 診斷 Console。
 - 透過 Android 文件選擇器匯出 JSON 診斷資料。
 - 手動同步感測器時間。
+- 以 2.5 秒無新封包作為一次量測結束，顯示最新值、本次平均、量測起訖時間與樣本數。
+- 依環境部 PM2.5 濃度級距動態調整量測卡片底色（僅作瞬時濃度分級參考，非完整 AQI）。
+- Foreground Service、偏好裝置與斷線指數退避自動重連。
+- SQLite transactional outbox、HTTPS 認證、重試與 30 天本機資料留存。
+- 可選用 Supabase Edge Functions 提供受保護的上傳及最新量測唯讀 API。
 - Android 12 以上使用 Nearby devices 權限，不蒐集手機定位。
 
 ## 專案狀態
 
 目前是可安裝與實機測量的早期測試版本。基礎 BLE 連線、服務探索、通知訂閱、量測命令與資料解析已通過實機驗證。
 
-尚未完成：
+後續規劃：
 
-- 背景 Foreground Service 與自動重連。
 - 裝置歷史資料同步。
 - 可設定的定時量測。
-- 帶有 outbox、認證與重試機制的自架 API 同步。
 - Home Assistant／Node-RED adapter。
+- 使用者主動設定的站點／民間空氣地圖 adapter（本版不實作 GPS）。
 
 詳細進度見 [Roadmap](docs/ROADMAP.md)。
+
+卡片級距參考[環境部空氣品質指標說明](https://airtw.moenv.gov.tw/CHT/Information/Standard/AirQualityIndicator.aspx)。官方 AQI 的即時 PM2.5 指標含移動平均公式，因此 App 不把單次感測值標示成 AQI。
 
 ## 架構
 
@@ -42,16 +48,17 @@ Android Client
     ├── measurement parser
     ├── private SQLite storage
     ├── diagnostic console / JSON export
-    └── planned secure outbox
+    └── secure outbox
              │ HTTPS / private network
              ▼
-       Self-hosted API / Smart Home / Agent
+       Supabase / bridge / Agent
 ```
 
 - [架構文件](docs/ARCHITECTURE.md)
 - [軟體設計文件](docs/SOFTWARE_DESIGN.md)
 - [資料格式](docs/DATA_FORMAT.md)
 - [安全與隱私](docs/SECURITY.md)
+- [Supabase 與 Agent bridge 設定](docs/API_SETUP.md)
 
 ## 開發環境
 
@@ -91,8 +98,10 @@ app/build/outputs/apk/debug/app-debug.apk
 ## 資料與隱私
 
 - 預設不連線任何雲端服務。
+- 只有在本機明確填入 API URL 與金鑰後才會同步。
 - 資料只保存在 App 私有儲存空間。
 - 不讀取或保存 GPS 座標。
+- 本機量測、session、事件與 outbox 最長保留 30 天。
 - 診斷資料只在使用者主動匯出時產生。
 - Repository 不包含實機 MAC、裝置名稱、手機型號、主機名稱、私有 IP、憑證或使用者量測資料。
 

@@ -14,13 +14,14 @@
                                       │ - packet parser        │
                                       │ - SQLite repository    │
                                       │ - Compose UI           │
-                                      │ - diagnostic export    │
+                                      │ - session aggregator   │
+                                      │ - transactional outbox │
                                       └───────────┬────────────┘
-                                                  │ planned HTTPS
+                                                  │ authenticated HTTPS
                                                   ▼
                                       ┌────────────────────────┐
-                                      │ Self-hosted API        │
-                                      │ Smart Home / Agent     │
+                                      │ Supabase Edge Function │
+                                      │ read API / Agent bridge│
                                       └────────────────────────┘
 ```
 
@@ -40,8 +41,12 @@
 
 Jetpack Compose UI 顯示連線狀態與最新量測。診斷 Console 與 JSON 匯出用來協助裝置相容性測試。
 
-## 未來資料同步
+## 背景連線與資料同步
 
-規劃使用 transactional outbox：量測先寫入 SQLite，再由背景工作送往使用者指定的 HTTPS API；伺服器確認後才標記完成。斷線、手機休眠或伺服器暫時不可用時，不應阻塞 BLE 量測。
+Foreground Service 維持 BLE 連線；斷線後以指數退避重連已保存的偏好裝置。一次 session 以最後一筆通知後 2.5 秒為界，全部樣本先在同一 SQLite transaction 寫入 session 與 outbox，再由 WorkManager 送往使用者指定的 HTTPS API。伺服器確認後才標記完成，網路錯誤不阻塞 BLE 量測。
 
-Agent 不直接控制 BLE，而是透過自架 API 的唯讀端點取得最新或歷史資料，以縮小權限與網路暴露面。
+上傳金鑰和唯讀金鑰分離。Agent 不直接控制 BLE，而是透過受保護的 `last-measurement` API 或本機 bridge 快取取得最後一次 session；回應同時包含最新值、平均值、起訖時間及樣本數。
+
+## 定位與未來擴充
+
+v0.2 不讀取、保存或上傳 GPS 座標。後端保留不透明的 `metadata` 擴充欄位，但 ingestion 目前固定寫入空物件。未來若整合民間空氣地圖，須另行設計「使用者主動設定站點」模式及清楚的同意流程，不能由本版自動推定位置。
