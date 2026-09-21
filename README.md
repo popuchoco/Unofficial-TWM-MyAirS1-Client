@@ -59,6 +59,8 @@ Android Client
 - [資料格式](docs/DATA_FORMAT.md)
 - [安全與隱私](docs/SECURITY.md)
 - [Supabase 與 Agent bridge 設定](docs/API_SETUP.md)
+- [實機與 Supabase 驗證紀錄](docs/VALIDATION.md)
+- [Code Review 紀錄](docs/CODE_REVIEW.md)
 
 ## 開發環境
 

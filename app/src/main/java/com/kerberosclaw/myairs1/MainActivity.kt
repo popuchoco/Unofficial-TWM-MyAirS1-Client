@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
             state.deviceName?.let { Text("裝置：$it") }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!granted) Button(onClick = requestPermissions) { Text("允許必要權限") }
-                Button(onClick = { ble.scan() }, enabled = granted && !state.scanning) { Text(if (state.scanning) "掃描中" else "掃描並連線") }
+                Button(onClick = { ble.scan() }, enabled = granted && !state.scanning && !state.connecting && !state.connected) { Text(if (state.scanning) "掃描中" else "掃描並連線") }
                 Button(onClick = { ble.measure() }, enabled = state.connected && !state.busy) { Text("立即量測") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

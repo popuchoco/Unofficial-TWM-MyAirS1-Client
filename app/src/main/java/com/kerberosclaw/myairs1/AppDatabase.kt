@@ -20,6 +20,24 @@ data class SessionSummary(
 
 data class OutboxItem(val id: Long, val payload: String, val attempts: Int)
 
+object SessionCalculator {
+    fun summarize(samples: List<Measurement>, eventId: String = UUID.randomUUID().toString()): SessionSummary? {
+        if (samples.isEmpty()) return null
+        val ordered = samples.sortedBy { it.receivedAt }
+        val latest = ordered.last()
+        return SessionSummary(
+            eventId = eventId,
+            startedAt = ordered.first().receivedAt,
+            endedAt = latest.receivedAt,
+            sampleCount = ordered.size,
+            latest = latest,
+            averagePm25 = ordered.map { it.pm25 }.average(),
+            averageTemperatureC = ordered.map { it.temperatureC }.average(),
+            averageHumidityPercent = ordered.map { it.humidityPercent }.average()
+        )
+    }
+}
+
 class AppDatabase(context: Context) : SQLiteOpenHelper(context, "myair-s1.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE measurements(id INTEGER PRIMARY KEY AUTOINCREMENT, received_at INTEGER NOT NULL, device_epoch INTEGER, pm25 INTEGER, temperature REAL, humidity REAL, battery INTEGER, trigger TEXT, raw_hex TEXT UNIQUE NOT NULL)")
@@ -51,19 +69,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "myair-s1.db", n
     }
 
     fun completeSession(samples: List<Measurement>): SessionSummary? {
-        if (samples.isEmpty()) return null
-        val ordered = samples.sortedBy { it.receivedAt }
-        val latest = ordered.last()
-        val summary = SessionSummary(
-            eventId = UUID.randomUUID().toString(),
-            startedAt = ordered.first().receivedAt,
-            endedAt = latest.receivedAt,
-            sampleCount = ordered.size,
-            latest = latest,
-            averagePm25 = ordered.map { it.pm25 }.average(),
-            averageTemperatureC = ordered.map { it.temperatureC }.average(),
-            averageHumidityPercent = ordered.map { it.humidityPercent }.average()
-        )
+        val summary = SessionCalculator.summarize(samples) ?: return null
+        val latest = summary.latest
         val payload = summary.toJson().toString()
         writableDatabase.beginTransaction()
         try {

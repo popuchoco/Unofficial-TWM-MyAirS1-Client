@@ -11,7 +11,7 @@ import java.util.ArrayDeque
 
 data class UiState(
     val phase: String = "尚未掃描", val deviceName: String? = null, val address: String? = null,
-    val scanning: Boolean = false, val connected: Boolean = false, val busy: Boolean = false,
+    val scanning: Boolean = false, val connecting: Boolean = false, val connected: Boolean = false, val busy: Boolean = false,
     val backgroundEnabled: Boolean = false, val latest: Measurement? = null,
     val latestSession: SessionSummary? = null, val logs: List<String> = emptyList()
 )
@@ -25,16 +25,29 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     private val handler = Handler(context.mainLooper)
     private val opQueue = ArrayDeque<() -> Unit>()
     private val sessionSamples = mutableListOf<Measurement>()
+    private val sessionLock = Any()
     private var gatt: BluetoothGatt? = null
     private var operationRunning = false
-    private var autoReconnect = false
+    @Volatile private var autoReconnect = false
     private var reconnectAttempt = 0
     private val finishMeasurement = Runnable { finishSession() }
     private val reconnect = Runnable { if (autoReconnect && !mutable.value.connected) connectPreferredOrScan() }
+    private val connectionTimeout = Runnable {
+        if (mutable.value.connecting) {
+            log("GATT 連線逾時")
+            val timedOutGatt = gatt
+            gatt = null
+            mutable.value = mutable.value.copy(connecting = false, connected = false)
+            timedOutGatt?.disconnect()
+            timedOutGatt?.close()
+            scheduleReconnect()
+        }
+    }
     private val scanTimeout: Runnable = Runnable {
         if (mutable.value.scanning) {
             adapter?.bluetoothLeScanner?.stopScan(scanCallback)
-            mutable.value = mutable.value.copy(phase = "掃描逾時，等待自動重試", scanning = false)
+            val phase = if (autoReconnect) "掃描逾時，等待自動重試" else "掃描逾時，請靠近裝置後重試"
+            mutable.value = mutable.value.copy(phase = phase, scanning = false)
             log("BLE 掃描 15 秒未找到裝置")
             scheduleReconnect()
         }
@@ -47,10 +60,14 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
 
     fun startAutoReconnect() { autoReconnect = true; mutable.value = mutable.value.copy(backgroundEnabled = true); connectPreferredOrScan() }
     fun stopAutoReconnect() { autoReconnect = false; handler.removeCallbacks(reconnect); mutable.value = mutable.value.copy(backgroundEnabled = false) }
-    fun scan() { reconnectAttempt = 0; scanInternal() }
+    fun scan() {
+        if (mutable.value.connected || mutable.value.connecting) { log("裝置已連線或連線中，略過重複掃描"); return }
+        reconnectAttempt = 0
+        scanInternal()
+    }
 
     private fun connectPreferredOrScan() {
-        if (mutable.value.connected || mutable.value.scanning) return
+        if (mutable.value.connected || mutable.value.connecting || mutable.value.scanning) return
         val address = prefs.getString("preferred_address", null)
         val device = address?.let { runCatching { adapter?.getRemoteDevice(it) }.getOrNull() }
         if (device != null) { log("嘗試重新連線已綁定裝置"); connect(device) } else scanInternal()
@@ -61,7 +78,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             mutable.value = mutable.value.copy(phase = "手機藍牙不可用或尚未開啟", scanning = false)
             scheduleReconnect(); return
         }
-        if (mutable.value.scanning) return
+        if (mutable.value.connected || mutable.value.connecting || mutable.value.scanning) return
         handler.removeCallbacks(scanTimeout)
         mutable.value = mutable.value.copy(phase = "正在掃描 myAir S1…", scanning = true)
         log("開始 BLE 掃描")
@@ -88,18 +105,23 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
 
     private fun connect(device: BluetoothDevice) {
         handler.removeCallbacks(reconnect)
-        mutable.value = mutable.value.copy(phase = "正在連線…", address = device.address)
-        gatt?.close(); gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        handler.removeCallbacks(connectionTimeout)
+        mutable.value = mutable.value.copy(phase = "正在連線…", connecting = true, connected = false, address = device.address)
+        gatt?.close()
+        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        handler.postDelayed(connectionTimeout, 20_000)
     }
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            if (gatt !== g) { g.close(); return }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 reconnectAttempt = 0; prefs.edit().putString("preferred_address", g.device.address).apply()
-                mutable.value = mutable.value.copy(phase = "已連線，正在讀取服務…", connected = true, address = g.device.address)
+                mutable.value = mutable.value.copy(phase = "已連線，正在讀取服務…", address = g.device.address)
                 log("GATT 已連線（status=$status），開始讀取服務"); g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                finishSession(); mutable.value = mutable.value.copy(phase = "已斷線，等待重新連線", connected = false, busy = false)
+                handler.removeCallbacks(connectionTimeout)
+                finishSession(); mutable.value = mutable.value.copy(phase = "已斷線，等待重新連線", connecting = false, connected = false, busy = false)
                 operationRunning = false; opQueue.clear(); log("GATT 已斷線（status=$status）"); g.close()
                 if (gatt === g) gatt = null
                 scheduleReconnect()
@@ -109,7 +131,8 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             val service = g.getService(S1Protocol.MEASUREMENT_SERVICE)
             log("服務探索 status=$status；共 ${g.services.size} 個服務")
             if (status != BluetoothGatt.GATT_SUCCESS || service == null) { mutable.value = mutable.value.copy(phase = "找不到 myAir S1 量測服務"); g.disconnect(); return }
-            mutable.value = mutable.value.copy(phase = "已連線，可開始量測")
+            handler.removeCallbacks(connectionTimeout)
+            mutable.value = mutable.value.copy(phase = "已連線，可開始量測", connecting = false, connected = true)
             enableNotify(g, service.getCharacteristic(S1Protocol.SENSOR_MEASUREMENT)); enableNotify(g, service.getCharacteristic(S1Protocol.CONTROL_POINT))
         }
         @Deprecated("Deprecated in API 33") override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) = receive(c.uuid, c.value)
@@ -122,7 +145,8 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         val raw = with(S1Protocol) { value.hexString() }; log("notify $uuid (${value.size} bytes): $raw")
         if (uuid != S1Protocol.SENSOR_MEASUREMENT || value.size < 18) return
         runCatching { S1Protocol.parse(value) }.onSuccess { measurement ->
-            db.addMeasurement(measurement); sessionSamples += measurement
+            db.addMeasurement(measurement)
+            synchronized(sessionLock) { sessionSamples += measurement }
             mutable.value = mutable.value.copy(phase = "正在接收量測串流…", latest = measurement, busy = true)
             handler.removeCallbacks(finishMeasurement); handler.postDelayed(finishMeasurement, 2_500)
         }.onFailure { error -> mutable.value = mutable.value.copy(phase = "封包解析失敗：${error.message}", busy = false) }
@@ -130,7 +154,9 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
 
     private fun finishSession() {
         handler.removeCallbacks(finishMeasurement)
-        val samples = sessionSamples.toList(); sessionSamples.clear()
+        val samples = synchronized(sessionLock) {
+            sessionSamples.toList().also { sessionSamples.clear() }
+        }
         if (samples.isEmpty()) return
         val summary = db.completeSession(samples) ?: return
         mutable.value = mutable.value.copy(phase = "量測完成", busy = false, latest = summary.latest, latestSession = summary)
@@ -172,8 +198,15 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         else { @Suppress("DEPRECATION") c.value = bytes; @Suppress("DEPRECATION") g.writeCharacteristic(c) }
         if (ok) log("已送出${label}命令") else { log("$label 命令無法排入 GATT"); operationDone() }
     }
-    private fun enqueue(op: () -> Unit) { opQueue.add(op); runNext() }
-    private fun runNext() { if (!operationRunning && opQueue.isNotEmpty()) { operationRunning = true; opQueue.removeFirst().invoke() } }
-    private fun operationDone() { operationRunning = false; runNext() }
-    fun disconnect() { stopAutoReconnect(); handler.removeCallbacks(scanTimeout); handler.removeCallbacks(finishMeasurement); adapter?.bluetoothLeScanner?.stopScan(scanCallback); gatt?.disconnect() }
+    @Synchronized private fun enqueue(op: () -> Unit) { opQueue.add(op); runNext() }
+    @Synchronized private fun runNext() { if (!operationRunning && opQueue.isNotEmpty()) { operationRunning = true; opQueue.removeFirst().invoke() } }
+    @Synchronized private fun operationDone() { operationRunning = false; runNext() }
+    fun disconnect() {
+        stopAutoReconnect()
+        handler.removeCallbacks(scanTimeout)
+        handler.removeCallbacks(connectionTimeout)
+        handler.removeCallbacks(finishMeasurement)
+        adapter?.bluetoothLeScanner?.stopScan(scanCallback)
+        gatt?.disconnect()
+    }
 }

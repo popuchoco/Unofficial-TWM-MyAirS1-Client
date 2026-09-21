@@ -19,8 +19,8 @@ android {
         applicationId = "com.kerberosclaw.myairs1"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0-test"
+        versionCode = 4
+        versionName = "0.2.1-test"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "MYAIR_API_URL", "\"${localProp("MYAIR_API_URL")}\"")
         buildConfigField("String", "MYAIR_SUPABASE_ANON_KEY", "\"${localProp("MYAIR_SUPABASE_ANON_KEY")}\"")
