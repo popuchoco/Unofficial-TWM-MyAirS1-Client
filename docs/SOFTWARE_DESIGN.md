@@ -39,6 +39,7 @@ GATT operation queue 與 measurement task queue 是兩層不同佇列。後者�
 
 - 一般即時樣本保留 `raw_hex` 作診斷，但不再將它單獨設為 unique。
 - 歷史資料以裝置不透明雜湊、sequence、device epoch、trigger 與內容 checksum 建立 SHA-256 `event_fingerprint`，由 unique index 冪等匯入。
+- 歷史資料只進 `measurements` observation table；不建立 session／outbox，直到未來能可靠辨識一次完整歷史量測的分組邊界。
 - `received_at` 使用手機 wall clock；`device_epoch` 保留裝置原值。
 - 裝置時間可信度由與接收時間的差值判定。
 - 匯出包含 `schema_version`，後續變更可由 consumer 分支處理。

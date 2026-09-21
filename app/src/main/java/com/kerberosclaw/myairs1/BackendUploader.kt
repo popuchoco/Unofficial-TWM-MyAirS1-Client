@@ -39,7 +39,7 @@ object OutboxScheduler {
     private val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
     fun enqueue(context: Context) {
         WorkManager.getInstance(context).enqueueUniqueWork(
-            "myair-outbox-now", ExistingWorkPolicy.KEEP,
+            "myair-outbox-now", ExistingWorkPolicy.APPEND_OR_REPLACE,
             OneTimeWorkRequestBuilder<OutboxWorker>().setConstraints(constraints)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build()
         )

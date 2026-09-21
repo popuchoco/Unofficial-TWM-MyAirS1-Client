@@ -31,11 +31,45 @@ class ProtocolTest {
     @Test fun reassemblesReadOnlyHistoryPackets() {
         val record = byteArrayOf(1, 0, 0, 0, 0, 0, 8, 0, 1, 2, 80, 7, 0, 1, 10, 0, 20, 0)
         val first = byteArrayOf(0, 0, 0, 18, 0, 0, 0, 0) + record.copyOfRange(0, 12)
-        val second = byteArrayOf(0, 0, 0) + record.copyOfRange(12, 18)
+        val second = byteArrayOf(0, 0, 0) + record.copyOfRange(12, 18) + byteArrayOf(0, 0)
         val batch = S1Protocol.parseHistoryPackets(listOf(first, second))
         assertEquals(18, batch.declaredBytes)
         assertEquals(0, batch.checksumStatus)
         assertEquals(1, batch.records.size)
         assertArrayEquals(record, batch.records.single())
+    }
+
+    @Test fun readsHistoryChecksumStatusFromPacketTail() {
+        val record = ByteArray(18)
+        val first = byteArrayOf(0, 0, 0, 18, 0, 0, 0, 0) + record.copyOfRange(0, 12)
+        val second = byteArrayOf(0, 0, 0) + record.copyOfRange(12, 18) + byteArrayOf(0x12, 0x34)
+        val packets = listOf(first, second)
+        assertEquals(0x1234, S1Protocol.parseHistoryPackets(packets).checksumStatus)
+        assertEquals(true, S1Protocol.validatedHistoryPackets(packets).isFailure)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsUnboundedHistoryLength() {
+        val tooLarge = (S1Protocol.MAX_HISTORY_RECORDS + 1) * 18
+        val header = byteArrayOf(0, 0, 0, (tooLarge and 0xff).toByte(), ((tooLarge shr 8) and 0xff).toByte(), 0, 0, 0)
+        S1Protocol.parseHistoryPackets(listOf(header))
+    }
+
+    @Test fun reassemblesTwentyRecordsAcrossObservedPacketBoundary() {
+        val payload = ByteArray(20 * 18) { (it % 251).toByte() }
+        val packets = mutableListOf<ByteArray>()
+        packets += byteArrayOf(0, 0, 0, 0x68, 0x01, 0, 0, 0) + payload.copyOfRange(0, 12)
+        var offset = 12
+        var sequence = 1
+        while (payload.size - offset > 17) {
+            packets += byteArrayOf(sequence++.toByte(), 0, 0x20) + payload.copyOfRange(offset, offset + 17)
+            offset += 17
+        }
+        packets += byteArrayOf(sequence.toByte(), 0, 0x20) + payload.copyOfRange(offset, payload.size) + byteArrayOf(0, 0)
+
+        val result = S1Protocol.validatedHistoryPackets(packets).getOrThrow()
+        assertEquals(22, packets.size)
+        assertEquals(20, result.records.size)
+        assertArrayEquals(payload, result.records.flatMap { it.asList() }.toByteArray())
     }
 }

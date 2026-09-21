@@ -19,6 +19,7 @@ object S1Protocol {
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     val MEASURE_COMMAND: ByteArray = hex("001503000000011001")
     val HISTORY_SYNC_START_COMMAND: ByteArray = hex("0021020000000101")
+    const val MAX_HISTORY_RECORDS = 1_000
 
     data class HistoryBatch(val declaredBytes: Int, val checksumStatus: Int, val records: List<ByteArray>)
 
@@ -28,7 +29,7 @@ object S1Protocol {
         val first = packets.first()
         require(first.size >= 8) { "第一個歷史封包不足 8 bytes" }
         val declaredBytes = ByteBuffer.wrap(first, 3, 4).order(ByteOrder.LITTLE_ENDIAN).int
-        require(declaredBytes >= 0 && declaredBytes % 18 == 0) { "歷史資料長度不合法：$declaredBytes" }
+        require(declaredBytes >= 0 && declaredBytes % 18 == 0 && declaredBytes <= MAX_HISTORY_RECORDS * 18) { "歷史資料長度不合法：$declaredBytes" }
         val payload = buildList<Byte> {
             packets.forEachIndexed { index, packet ->
                 val header = if (index == 0) 8 else 3
@@ -38,12 +39,16 @@ object S1Protocol {
         require(payload.size == declaredBytes) { "歷史資料不完整：${payload.size}/$declaredBytes bytes" }
         val last = packets.last()
         val checksum = if (last.size > 4) {
-            ((last[2].toInt() and 0xff) shl 8) or (last[3].toInt() and 0xff)
+            ((last[last.lastIndex - 1].toInt() and 0xff) shl 8) or (last.last().toInt() and 0xff)
         } else {
             require(packets.size >= 2 && packets[packets.lastIndex - 1].isNotEmpty() && last.isNotEmpty()) { "歷史 checksum 不完整" }
             ((packets[packets.lastIndex - 1].last().toInt() and 0xff) shl 8) or (last.last().toInt() and 0xff)
         }
         return HistoryBatch(declaredBytes, checksum, payload.asList().chunked(18).map { it.toByteArray() })
+    }
+
+    fun validatedHistoryPackets(packets: List<ByteArray>): Result<HistoryBatch> = runCatching {
+        parseHistoryPackets(packets).also { require(it.checksumStatus == 0) { "checksum status=${it.checksumStatus}" } }
     }
 
     fun hex(value: String): ByteArray = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()

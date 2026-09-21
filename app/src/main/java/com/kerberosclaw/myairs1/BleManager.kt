@@ -120,7 +120,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val name = result.device.name ?: result.scanRecord?.deviceName.orEmpty()
             val services = result.scanRecord?.serviceUuids?.map { it.uuid }.orEmpty()
-            if (!name.contains("myair", true) && !name.contains("S1", true) && S1Protocol.MEASUREMENT_SERVICE !in services) return
+            if (S1Protocol.MEASUREMENT_SERVICE !in services && !name.contains("myair", true)) return
             adapter?.bluetoothLeScanner?.stopScan(this); handler.removeCallbacks(scanTimeout)
             prefs.edit().putString("preferred_address", result.device.address).apply()
             mutable.value = mutable.value.copy(scanning = false, deviceName = name.ifBlank { "myAir S1" }, address = result.device.address)
@@ -319,15 +319,18 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             mutable.value = mutable.value.copy(historySyncing = false)
             return
         }
-        runCatching { S1Protocol.parseHistoryPackets(packets) }.onSuccess { batch ->
-            if (batch.checksumStatus != 0) error("checksum status=${batch.checksumStatus}")
+        val result = runCatching {
+            val batch = S1Protocol.validatedHistoryPackets(packets).getOrThrow()
             var imported = 0
             batch.records.forEach { record ->
                 val epoch = java.nio.ByteBuffer.wrap(record, 2, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xffffffffL
                 val deviceIdHash = HistoryFingerprint.opaqueDeviceId(mutable.value.address)
-                if (db.importHistoryMeasurement(S1Protocol.parse(record, epoch * 1000L), deviceIdHash) != null) imported++
+                if (db.importHistoryMeasurement(S1Protocol.parse(record, epoch * 1000L), deviceIdHash)) imported++
             }
-            val duplicates = batch.records.size - imported
+            batch.records.size to imported
+        }
+        result.onSuccess { (total, imported) ->
+            val duplicates = total - imported
             val status = "歷史同步完成：新增 $imported 筆、略過 $duplicates 筆重複資料；裝置端資料未清除"
             mutable.value = mutable.value.copy(historySyncing = false, historyStatus = status)
             log(status)
@@ -341,6 +344,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     }
     fun syncTime() {
         val g = gatt ?: run { log("尚未連線"); return }
+        if (mutable.value.busy || mutable.value.historySyncing) { log("目前有任務執行中，略過時間同步"); return }
         val c = g.getService(S1Protocol.MEASUREMENT_SERVICE)?.getCharacteristic(S1Protocol.CONTROL_POINT) ?: run { log("Control point 不存在"); return }
         mutable.value = mutable.value.copy(phase = "正在同步裝置時間…")
         enqueue { write(g, c, S1Protocol.timeSyncCommand(), "時間同步") }

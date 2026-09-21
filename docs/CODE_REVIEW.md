@@ -1,5 +1,15 @@
 # Code Review 紀錄
 
+## 2026-09-22：v0.3.3 實機 feedback 修正
+
+- 修正歷史封包全部抵達後仍卡在同步中的狀態機錯誤；checksum 依相容性來源及實機尾包改讀最後兩個 byte。
+- 將解析、checksum、匯入包在同一個 `runCatching`，確保任何階段失敗都會更新 UI 並清理同步狀態。
+- 歷史資料改為 observation-only，不再為每筆 18-byte record 建立假 session 或送入 outbox。
+- 歷史宣告長度上限為 1,000 筆，避免異常封包造成不合理配置。
+- 即時 outbox work 改用 `APPEND_OR_REPLACE`，避免 `KEEP` 吃掉剛完成的新 session。
+- BLE 掃描不再接受泛用 `S1` 名稱；time sync 在量測或歷史同步期間由程式層拒絕。
+- 總覽加入下拉重新整理；電量以最近完成 session 為優先，不顯示未完成串流的殘留值。
+
 ## 2026-09-21：本地排程與唯讀歷史同步
 
 - 手動與 Timer 統一由 `MeasurementCoordinator` FIFO 派發，等待上限 8 筆；量測完成、失敗或 60 秒逾時才釋放下一筆。

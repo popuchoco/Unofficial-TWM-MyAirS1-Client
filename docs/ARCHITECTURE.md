@@ -57,7 +57,7 @@ Foreground Service 維持 BLE 連線；斷線後以指數退避重連已保存�
 
 ## 裝置歷史同步安全界線
 
-歷史同步會訂閱獨立 characteristic、取得封包數、重組資料並檢查裝置回報的 checksum status，再以既有 18-byte parser 匯入。第一版固定為唯讀：程式沒有定義或送出清除歷史資料命令。封包解析、checksum 或資料庫寫入失敗時保留裝置端資料，等待下一輪實機驗證。
+歷史同步會訂閱獨立 characteristic、取得封包數、重組資料並檢查裝置回報的 checksum status，再以既有 18-byte parser 匯入 observations。歷史 observation 不建立 `measurement_sessions` 或 outbox，避免把單筆裝置紀錄誤當成一次完整量測，報告、CSV 與最後量測 API 仍只使用完成的 live session。第一版固定為唯讀：程式沒有定義或送出清除歷史資料命令。封包解析、checksum 或資料庫寫入失敗時保留裝置端資料。
 
 ## 遠端觸發擴充點（未實作）
 

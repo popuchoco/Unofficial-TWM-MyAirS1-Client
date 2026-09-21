@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -32,6 +33,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.*
 import java.time.format.DateTimeFormatter
 
@@ -75,6 +79,8 @@ class MainActivity : ComponentActivity() {
         var showExportDialog by remember { mutableStateOf(false) }
         var showScheduleDialog by remember { mutableStateOf(false) }
         var localSchedule by remember { mutableStateOf(db.localSchedule()) }
+        var overviewRefreshing by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
         var customDelay by remember { mutableStateOf("") }
         var dailyTime by remember { mutableStateOf("08:00") }
 
@@ -126,7 +132,13 @@ class MainActivity : ComponentActivity() {
             }
         ) { padding ->
             when (page) {
-                AppPage.OVERVIEW -> OverviewPage(Modifier.padding(padding), state, storedLatest)
+                AppPage.OVERVIEW -> OverviewPage(Modifier.padding(padding), state, storedLatest, overviewRefreshing) {
+                    if (!overviewRefreshing) scope.launch {
+                        overviewRefreshing = true
+                        storedLatest = withContext(Dispatchers.IO) { db.latestReportPoint() }
+                        overviewRefreshing = false
+                    }
+                }
                 AppPage.CONNECTION -> ConnectionPage(Modifier.padding(padding), state, granted, disconnectAlert,
                     requestPermissions = { permissions.launch(requiredPermissions()) },
                     onDisconnectAlert = { disconnectAlert = it; SettingsStore.setDisconnectAlert(this, it) })
@@ -182,22 +194,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Composable private fun OverviewPage(modifier: Modifier, state: UiState, stored: ReportPoint?) = Page(modifier) {
-        val live = state.latestSession
-        val pm25 = live?.latest?.pm25 ?: stored?.latestPm25
-        val average = live?.averagePm25 ?: stored?.averagePm25
-        val band = pm25?.let { Pm25Band.fromConcentration(it.toDouble()) }
-        AirQualityPanel("最近一次量測", pm25, average, band)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatusTile(Modifier.weight(1f), Icons.Outlined.BatteryFull, "裝置電量", state.latest?.batteryPercent?.let { "$it%" } ?: stored?.batteryPercent?.let { "$it%" } ?: "—")
-            StatusTile(Modifier.weight(1f), Icons.Outlined.BluetoothConnected, "連線狀態", when { state.connected -> "已連線"; state.connecting -> "連線中"; else -> "未連線" })
-        }
-        state.latestSession?.let { SessionDetails(it) }
-        if (state.latestSession == null && stored != null) SectionCard("最近一次摘要", Icons.Outlined.History) {
-            Text("平均溫度 ${"%.1f".format(stored.averageTemperatureC)} °C")
-            Text("平均濕度 ${"%.1f".format(stored.averageHumidityPercent)}% RH")
-            Text("${stored.sampleCount} 筆樣本", style = MaterialTheme.typography.bodySmall)
-            Text(DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(stored.endedAt)), style = MaterialTheme.typography.bodySmall)
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable private fun OverviewPage(modifier: Modifier, state: UiState, stored: ReportPoint?, refreshing: Boolean, refresh: () -> Unit) {
+        PullToRefreshBox(isRefreshing = refreshing, onRefresh = refresh, modifier = modifier.fillMaxSize()) {
+            Page(Modifier) {
+                val live = state.latestSession
+                val pm25 = live?.latest?.pm25 ?: stored?.latestPm25
+                val average = live?.averagePm25 ?: stored?.averagePm25
+                val band = pm25?.let { Pm25Band.fromConcentration(it.toDouble()) }
+                AirQualityPanel("最近一次量測", pm25, average, band)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    StatusTile(Modifier.weight(1f), Icons.Outlined.BatteryFull, "裝置電量", live?.latest?.batteryPercent?.let { "$it%" } ?: stored?.batteryPercent?.let { "$it%" } ?: "—")
+                    StatusTile(Modifier.weight(1f), Icons.Outlined.BluetoothConnected, "連線狀態", when { state.connected -> "已連線"; state.connecting -> "連線中"; else -> "未連線" })
+                }
+                state.latestSession?.let { SessionDetails(it) }
+                if (state.latestSession == null && stored != null) SectionCard("最近一次摘要", Icons.Outlined.History) {
+                    Text("平均溫度 ${"%.1f".format(stored.averageTemperatureC)} °C")
+                    Text("平均濕度 ${"%.1f".format(stored.averageHumidityPercent)}% RH")
+                    Text("${stored.sampleCount} 筆樣本", style = MaterialTheme.typography.bodySmall)
+                    Text(DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(stored.endedAt)), style = MaterialTheme.typography.bodySmall)
+                }
+                Text("下拉可重新整理本機最新資料", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 

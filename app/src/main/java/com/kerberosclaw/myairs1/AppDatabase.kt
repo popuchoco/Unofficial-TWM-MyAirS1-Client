@@ -182,23 +182,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "myair-s1.db", n
         return persistSession(summary)
     }
 
-    /** Imports one device-stored observation exactly once and queues it through the normal outbox. */
-    fun importHistoryMeasurement(measurement: Measurement, deviceIdHash: String): SessionSummary? {
+    /** Imports one device-stored observation exactly once without pretending it is a live session. */
+    fun importHistoryMeasurement(measurement: Measurement, deviceIdHash: String): Boolean {
         val fingerprint = HistoryFingerprint.create(deviceIdHash, measurement)
-        val summary = SessionCalculator.summarize(
-            listOf(measurement), eventId = UUID.nameUUIDFromBytes(fingerprint.toByteArray()).toString(),
-            origin = MeasurementOrigin.DEVICE_HISTORY, requestId = fingerprint
-        ) ?: return null
-        val database = writableDatabase
-        database.beginTransaction()
-        try {
-            val inserted = insertMeasurement(database, measurement, fingerprint)
-            if (inserted == -1L) return null
-            insertSessionAndOutbox(database, summary)
-            database.setTransactionSuccessful()
-        } finally { database.endTransaction() }
+        if (insertMeasurement(writableDatabase, measurement, fingerprint) == -1L) return false
         pruneOlderThan30Days()
-        return summary
+        return true
     }
 
     private fun persistSession(summary: SessionSummary): SessionSummary {
@@ -270,7 +259,9 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "myair-s1.db", n
         }
     }
 
-    fun latestReportPoint(): ReportPoint? = reportPoints(0, Long.MAX_VALUE).lastOrNull()
+    fun latestReportPoint(): ReportPoint? = readableDatabase.rawQuery(
+        "SELECT started_at,ended_at,sample_count,latest_pm25,latest_battery,average_pm25,average_temperature,average_humidity FROM measurement_sessions ORDER BY ended_at DESC LIMIT 1", null
+    ).use { c -> if (!c.moveToFirst()) null else ReportPoint(c.getLong(0), c.getLong(1), c.getInt(2), c.getInt(3), c.getInt(4), c.getDouble(5), c.getDouble(6), c.getDouble(7)) }
 
     fun pruneOlderThan30Days(now: Long = System.currentTimeMillis()) {
         val cutoff = now - 30L * 24 * 60 * 60 * 1000

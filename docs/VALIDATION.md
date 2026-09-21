@@ -54,3 +54,12 @@ v0.3.0 新增 Device Information parser 測試，使用 14-byte 範例核對 Pro
 - 排程保存於 SQLite，Boot Receiver 只在仍有排程時恢復 Foreground Service。
 - 尚待實機確認：歷史封包邊界、checksum status、裝置容量、重複匯入、手機重開機、10 分鐘斷線寬限與各廠牌省電策略。
 - 本輪沒有實作或驗證 Supabase 遠端觸發。
+
+## v0.3.3 歷史同步狀態修正
+
+- 實機 diagnostic 顯示同步 ACK 宣告 22 個封包，22 個封包均已到達，但完成狀態沒有寫回 UI。
+- 根因為 checksum 位置誤讀，加上 `Result.onSuccess` 內拋出的新例外不會交給後續 `onFailure`，導致 `historySyncing` 未重設。
+- checksum status 已改讀最後一包的最後兩個 byte；新增 20 筆／22 封包邊界、非零 checksum 與超大宣告長度測試。
+- 完成、失敗、逾時與斷線都會離開同步狀態；歷史資料仍不送清除命令。
+- 歷史紀錄只寫入 observations，不建立 session／outbox，避免報表、CSV 與最後一次完整量測的語意混用。
+- 總覽新增下拉重新整理 SQLite 最新完成 session。
