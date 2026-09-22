@@ -33,6 +33,8 @@ Android Client 負責 myAir S1 的 BLE 連線、session 彙整、本機保存、
 
 Android GATT API 每次只允許一個可靠的非同步操作。所有 descriptor write 與 characteristic write 進入 FIFO queue；callback 呼叫 `operationDone()` 後才執行下一項。
 
+GATT callback 只解析與收集必要狀態；SQLite event、即時樣本、session 與歷史批次寫入交給單一背景 executor。歷史資料在同一 transaction 批次插入，完成後只執行一次 30 天清理。
+
 GATT operation queue 與 measurement task queue 是兩層不同佇列。後者最多等待 8 筆，只有前一筆完成、失敗或 60 秒逾時後才開始下一筆；因此 UI 連按與 Timer 同時到期也不會重疊寫入量測命令。
 
 ## 5. 資料一致性
@@ -40,6 +42,7 @@ GATT operation queue 與 measurement task queue 是兩層不同佇列。後者�
 - 一般即時樣本保留 `raw_hex` 作診斷，但不再將它單獨設為 unique。
 - 歷史資料以裝置不透明雜湊、sequence、device epoch、trigger 與內容 checksum 建立 SHA-256 `event_fingerprint`，由 unique index 冪等匯入。
 - 歷史資料只進 `measurements` observation table；不建立 session／outbox，直到未來能可靠辨識一次完整歷史量測的分組邊界。
+- 歷史同步以 10 秒無進度為一次失敗，最多三次完整唯讀重試；不補接不完整批次，也不送清除命令。
 - `received_at` 使用手機 wall clock；`device_epoch` 保留裝置原值。
 - 裝置時間可信度由與接收時間的差值判定。
 - 匯出包含 `schema_version`，後續變更可由 consumer 分支處理。

@@ -131,3 +131,13 @@ data class Measurement(
     val receivedAt: Long,
     val rawHex: String
 )
+
+enum class HistoryTimeoutAction { RETRY, FAIL }
+
+object HistoryRetryPolicy {
+    const val MAX_ATTEMPTS = 3
+    fun onNoProgress(attempt: Int, connected: Boolean): HistoryTimeoutAction =
+        if (connected && attempt < MAX_ATTEMPTS) HistoryTimeoutAction.RETRY else HistoryTimeoutAction.FAIL
+
+    fun expectedPackets(received: Int, remaining: Int?): Int? = remaining?.let { received + it }
+}

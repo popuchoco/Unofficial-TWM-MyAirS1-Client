@@ -1,5 +1,13 @@
 # Code Review 紀錄
 
+## 2026-09-22：v0.3.4 歷史同步尾包重試
+
+- 由實機時間線確認 Timeout 前只收到 23/25 包，缺少連續尾包，不是 UI 計時器提早觸發。
+- 歷史同步改為 10 秒無進度、最多三次完整批次重試；每次丟棄前一輪不完整資料，避免跨批次拼接。
+- 歷史 observations 採單一 transaction 批次匯入，30 天 prune 只執行一次，並移除沒有 outbox 資料時的 Worker 喚醒。
+- BLE callback 的 SQLite 寫入移到單一背景 executor；session 保存完成後才釋放下一個量測任務。
+- time sync 會暫時設定 `busy`，完成 characteristic write 後才恢復並續派等待中的量測。
+
 ## 2026-09-22：v0.3.3 實機 feedback 修正
 
 - 修正歷史封包全部抵達後仍卡在同步中的狀態機錯誤；checksum 依相容性來源及實機尾包改讀最後兩個 byte。
@@ -63,4 +71,4 @@
 - Android BLE stack 仍可能因廠牌省電策略停止背景工作，需要更多機型實測。
 - 未送達 outbox 最長也只保留 30 天，這是容量上限與離線耐受度之間的既定取捨。
 - Debug APK 內的 upload key 可被裝置持有人取得；其權限僅限寫入、可獨立撤銷，不能用來讀取量測資料。
-- 開機後自動啟動 Foreground Service 尚未實作，目前需由使用者在 App 內啟用。
+- （v0.2.1 當時狀態）開機後自動啟動 Foreground Service 尚未實作；此項已於 v0.3.2 由 `BootReceiver` 完成。

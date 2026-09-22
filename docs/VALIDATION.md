@@ -63,3 +63,12 @@ v0.3.0 新增 Device Information parser 測試，使用 14-byte 範例核對 Pro
 - 完成、失敗、逾時與斷線都會離開同步狀態；歷史資料仍不送清除命令。
 - 歷史紀錄只寫入 observations，不建立 session／outbox，避免報表、CSV 與最後一次完整量測的語意混用。
 - 總覽新增下拉重新整理 SQLite 最新完成 session。
+
+## v0.3.4 歷史尾包遺失與重試
+
+- 實機 diagnostic 顯示 ACK 宣告 25 個封包，實際只收到連續序號 `0x00`～`0x16`，共 23 包；缺少尾端 `0x17`、`0x18`，其後約 56 秒沒有新封包才觸發原本的 60 秒 Timeout。
+- 同一份紀錄較早的同步為 22/22 完整，因此判定為 BLE burst 尾包偶發遺失，而非 App 提早逾時、長度誤判或 checksum 卡住。
+- 改為連續 10 秒無進度後重新要求完整唯讀批次，最多三次；畫面顯示嘗試次數與已收／預期封包數。
+- 新增 retry policy 測試，覆蓋 23/25、第一／第二次重試、第三次失敗與斷線不重試。
+- 歷史 observation 改成單一 transaction 批次寫入並只清理一次；成功後不再無效喚醒 outbox worker。
+- SQLite 寫入移出 GATT callback thread，time sync 也會佔用 busy 狀態，避免與量測 control-point 命令交錯。

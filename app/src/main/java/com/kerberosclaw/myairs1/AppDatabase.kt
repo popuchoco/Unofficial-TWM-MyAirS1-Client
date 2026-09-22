@@ -182,12 +182,21 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, "myair-s1.db", n
         return persistSession(summary)
     }
 
-    /** Imports one device-stored observation exactly once without pretending it is a live session. */
-    fun importHistoryMeasurement(measurement: Measurement, deviceIdHash: String): Boolean {
-        val fingerprint = HistoryFingerprint.create(deviceIdHash, measurement)
-        if (insertMeasurement(writableDatabase, measurement, fingerprint) == -1L) return false
+    /** Imports a complete validated history batch in one transaction and prunes only once. */
+    fun importHistoryMeasurements(measurements: List<Measurement>, deviceIdHash: String): Int {
+        if (measurements.isEmpty()) return 0
+        val database = writableDatabase
+        var imported = 0
+        database.beginTransaction()
+        try {
+            measurements.forEach { measurement ->
+                val fingerprint = HistoryFingerprint.create(deviceIdHash, measurement)
+                if (insertMeasurement(database, measurement, fingerprint) != -1L) imported++
+            }
+            database.setTransactionSuccessful()
+        } finally { database.endTransaction() }
         pruneOlderThan30Days()
-        return true
+        return imported
     }
 
     private fun persistSession(summary: SessionSummary): SessionSummary {
