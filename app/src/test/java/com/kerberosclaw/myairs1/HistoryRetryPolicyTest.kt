@@ -14,4 +14,12 @@ class HistoryRetryPolicyTest {
     @Test fun disconnectedBatchDoesNotRetry() {
         assertEquals(HistoryTimeoutAction.FAIL, HistoryRetryPolicy.onNoProgress(attempt = 1, connected = false))
     }
+
+    @Test fun packetSequenceMustRestartAndRemainContiguousForEachAttempt() {
+        assertEquals(true, HistoryRetryPolicy.isExpectedSequence(0, byteArrayOf(0x00, 0x20)))
+        assertEquals(true, HistoryRetryPolicy.isExpectedSequence(23, byteArrayOf(0x17, 0x20)))
+        assertEquals(false, HistoryRetryPolicy.isExpectedSequence(0, byteArrayOf(0x17, 0x20)))
+        assertEquals(false, HistoryRetryPolicy.isExpectedSequence(2, byteArrayOf(0x03, 0x20)))
+        assertEquals(false, HistoryRetryPolicy.isExpectedSequence(0, byteArrayOf()))
+    }
 }

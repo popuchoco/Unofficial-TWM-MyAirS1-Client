@@ -43,6 +43,8 @@ GATT operation queue 與 measurement task queue 是兩層不同佇列。後者�
 - 歷史資料以裝置不透明雜湊、sequence、device epoch、trigger 與內容 checksum 建立 SHA-256 `event_fingerprint`，由 unique index 冪等匯入。
 - 歷史資料只進 `measurements` observation table；不建立 session／outbox，直到未來能可靠辨識一次完整歷史量測的分組邊界。
 - 歷史同步以 10 秒無進度為一次失敗，最多三次完整唯讀重試；不補接不完整批次，也不送清除命令。
+- 重試前等待 1.5 秒無歷史通知的 quiet window；每次只接受一個 ACK，且要求封包序號由 0 連續遞增。由於協定沒有 attempt ID，這是交錯風險緩解而非完整世代識別。
+- BLE 掃描從第一個候選起收集 3 秒並以位址去重：一台自動連線，多台必須由使用者選擇；偏好裝置只在實際選定後更新。
 - `received_at` 使用手機 wall clock；`device_epoch` 保留裝置原值。
 - 裝置時間可信度由與接收時間的差值判定。
 - 匯出包含 `schema_version`，後續變更可由 consumer 分支處理。

@@ -11,6 +11,15 @@ import java.util.ArrayDeque
 import java.util.concurrent.Executors
 
 private const val HISTORY_PROGRESS_TIMEOUT_MS = 10_000L
+private const val HISTORY_RETRY_SETTLE_MS = 1_500L
+private const val DEVICE_DISCOVERY_WINDOW_MS = 3_000L
+
+data class BleDeviceCandidate(
+    val address: String,
+    val name: String,
+    val rssi: Int,
+    val isPreferred: Boolean
+)
 
 data class UiState(
     val phase: String = "尚未掃描", val deviceName: String? = null, val address: String? = null,
@@ -19,6 +28,8 @@ data class UiState(
     val latestSession: SessionSummary? = null, val firmwareVersion: String? = null,
     val deviceModel: String? = null, val hardwareVersion: String? = null, val deviceProtocolVersion: String? = null,
     val historySyncing: Boolean = false, val historyStatus: String? = null,
+    val deviceCandidates: List<BleDeviceCandidate> = emptyList(),
+    val preferredDeviceName: String? = null,
     val logs: List<String> = emptyList()
 )
 
@@ -43,6 +54,10 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     private val historyPackets = mutableListOf<ByteArray>()
     private var historyPacketsRemaining: Int? = null
     private var historyAttempt = 0
+    private var awaitingHistoryAck = false
+    private var historyRetrySettling = false
+    private val scanCandidates = linkedMapOf<String, BleDeviceCandidate>()
+    private var deviceSelectionInProgress = false
     private var queueReadyCallback: (() -> Unit)? = null
     private val finishMeasurement = Runnable { finishSession() }
     private val measurementTimeout = Runnable {
@@ -59,15 +74,14 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             val progress = expected?.let { "${historyPackets.size}/$it 個封包" } ?: "尚未收到封包數 ACK"
             if (HistoryRetryPolicy.onNoProgress(historyAttempt, mutable.value.connected) == HistoryTimeoutAction.RETRY) {
                 log("歷史同步無進度（$progress），準備第 ${historyAttempt + 1}/${HistoryRetryPolicy.MAX_ATTEMPTS} 次唯讀重試")
-                startHistoryAttempt()
+                prepareHistoryRetry()
             } else {
-                historyPackets.clear(); historyPacketsRemaining = null
-                val status = "歷史同步失敗：$progress，已達 ${HistoryRetryPolicy.MAX_ATTEMPTS} 次嘗試；裝置端資料未清除"
-                mutable.value = mutable.value.copy(historySyncing = false, historyStatus = status)
-                log(status)
+                failHistorySync("$progress，已達 ${HistoryRetryPolicy.MAX_ATTEMPTS} 次嘗試")
             }
         }
     }
+    private val historyRetrySettle = Runnable { if (mutable.value.historySyncing) startHistoryAttempt() }
+    private val discoveryWindow = Runnable { finishCandidateDiscovery() }
     private val reconnect = Runnable { if (autoReconnect && !mutable.value.connected) connectPreferredOrScan() }
     private val connectionTimeout = Runnable {
         if (mutable.value.connecting) {
@@ -82,6 +96,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     }
     private val scanTimeout: Runnable = Runnable {
         if (mutable.value.scanning) {
+            handler.removeCallbacks(discoveryWindow)
             adapter?.bluetoothLeScanner?.stopScan(scanCallback)
             val phase = if (autoReconnect) "掃描逾時，等待自動重試" else "掃描逾時，請靠近裝置後重試"
             mutable.value = mutable.value.copy(phase = phase, scanning = false)
@@ -110,6 +125,48 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         scanInternal()
     }
 
+    fun selectDevice(address: String) {
+        val candidate = scanCandidates[address] ?: return
+        deviceSelectionInProgress = false
+        scanCandidates.clear()
+        mutable.value = mutable.value.copy(deviceCandidates = emptyList())
+        rememberPreferred(candidate)
+        adapter?.getRemoteDevice(address)?.let(::connect)
+    }
+
+    fun dismissDeviceSelection() {
+        deviceSelectionInProgress = false
+        scanCandidates.clear()
+        mutable.value = mutable.value.copy(deviceCandidates = emptyList(), phase = "已取消選擇裝置")
+        scheduleReconnect()
+    }
+
+    fun changeDevice() {
+        deviceSelectionInProgress = true
+        handler.removeCallbacks(reconnect)
+        gatt?.disconnect()
+        gatt?.close()
+        gatt = null
+        mutable.value = mutable.value.copy(connected = false, connecting = false, phase = "請選擇其他裝置")
+        handler.postDelayed({ scanInternal() }, 300)
+    }
+
+    fun forgetPreferredDevice() {
+        deviceSelectionInProgress = false
+        autoReconnect = false
+        handler.removeCallbacks(reconnect)
+        prefs.edit().remove("preferred_address").remove("preferred_name").apply()
+        gatt?.disconnect()
+        gatt?.close()
+        gatt = null
+        scanCandidates.clear()
+        mutable.value = mutable.value.copy(
+            connected = false, connecting = false, deviceName = null, address = null,
+            preferredDeviceName = null, deviceCandidates = emptyList(), backgroundEnabled = false,
+            phase = "已忘記綁定裝置"
+        )
+    }
+
     private fun connectPreferredOrScan() {
         if (mutable.value.connected || mutable.value.connecting || mutable.value.scanning) return
         val address = prefs.getString("preferred_address", null)
@@ -124,7 +181,12 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         }
         if (mutable.value.connected || mutable.value.connecting || mutable.value.scanning) return
         handler.removeCallbacks(scanTimeout)
-        mutable.value = mutable.value.copy(phase = "正在掃描 myAir S1…", scanning = true)
+        handler.removeCallbacks(discoveryWindow)
+        scanCandidates.clear()
+        mutable.value = mutable.value.copy(
+            phase = "正在掃描 myAir S1…", scanning = true, deviceCandidates = emptyList(),
+            preferredDeviceName = prefs.getString("preferred_name", null)
+        )
         log("開始 BLE 掃描")
         scanner.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCallback)
         handler.postDelayed(scanTimeout, 15_000)
@@ -135,16 +197,52 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             val name = result.device.name ?: result.scanRecord?.deviceName.orEmpty()
             val services = result.scanRecord?.serviceUuids?.map { it.uuid }.orEmpty()
             if (S1Protocol.MEASUREMENT_SERVICE !in services && !name.contains("myair", true)) return
-            adapter?.bluetoothLeScanner?.stopScan(this); handler.removeCallbacks(scanTimeout)
-            prefs.edit().putString("preferred_address", result.device.address).apply()
-            mutable.value = mutable.value.copy(scanning = false, deviceName = name.ifBlank { "myAir S1" }, address = result.device.address)
-            log("找到 ${mutable.value.deviceName}，RSSI ${result.rssi} dBm"); connect(result.device)
+            val displayName = name.ifBlank { "myAir S1" }
+            val firstCandidate = scanCandidates.isEmpty()
+            scanCandidates[result.device.address] = BleDeviceCandidate(
+                address = result.device.address,
+                name = displayName,
+                rssi = result.rssi,
+                isPreferred = result.device.address == prefs.getString("preferred_address", null)
+            )
+            mutable.value = mutable.value.copy(phase = "找到 ${scanCandidates.size} 台裝置，短暫確認附近裝置…")
+            if (firstCandidate) handler.postDelayed(discoveryWindow, DEVICE_DISCOVERY_WINDOW_MS)
         }
         override fun onScanFailed(errorCode: Int) {
             handler.removeCallbacks(scanTimeout)
             mutable.value = mutable.value.copy(phase = "掃描失敗（$errorCode）", scanning = false)
             log("BLE 掃描失敗：$errorCode"); scheduleReconnect()
         }
+    }
+
+    private fun finishCandidateDiscovery() {
+        if (!mutable.value.scanning || scanCandidates.isEmpty()) return
+        adapter?.bluetoothLeScanner?.stopScan(scanCallback)
+        handler.removeCallbacks(scanTimeout)
+        val candidates = scanCandidates.values.sortedWith(
+            compareByDescending<BleDeviceCandidate> { it.isPreferred }.thenByDescending { it.rssi }
+        )
+        if (DeviceDiscoveryPolicy.action(candidates.size) == DeviceDiscoveryAction.AUTO_CONNECT) {
+            val candidate = candidates.single()
+            deviceSelectionInProgress = false
+            rememberPreferred(candidate)
+            mutable.value = mutable.value.copy(scanning = false, deviceCandidates = emptyList())
+            adapter?.getRemoteDevice(candidate.address)?.let(::connect)
+        } else {
+            mutable.value = mutable.value.copy(
+                scanning = false,
+                phase = "找到 ${candidates.size} 台 myAir S1，請選擇要連線的裝置",
+                deviceCandidates = candidates
+            )
+        }
+    }
+
+    private fun rememberPreferred(candidate: BleDeviceCandidate) {
+        prefs.edit().putString("preferred_address", candidate.address).putString("preferred_name", candidate.name).apply()
+        mutable.value = mutable.value.copy(
+            deviceName = candidate.name, address = candidate.address, preferredDeviceName = candidate.name
+        )
+        log("選擇 ${candidate.name}，RSSI ${candidate.rssi} dBm")
     }
 
     private fun connect(device: BluetoothDevice) {
@@ -166,8 +264,11 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 handler.removeCallbacks(connectionTimeout)
                 handler.removeCallbacks(finishMeasurement); handler.removeCallbacks(measurementTimeout); handler.removeCallbacks(historyTimeout)
+                handler.removeCallbacks(historyRetrySettle)
                 synchronized(sessionLock) { sessionSamples.clear() }
                 timeSyncInProgress = false
+                awaitingHistoryAck = false
+                historyRetrySettling = false
                 mutable.value = mutable.value.copy(phase = "已斷線，等待重新連線", connecting = false, connected = false, busy = false,
                     historySyncing = false, historyStatus = if (mutable.value.historySyncing) "歷史同步因斷線中止；裝置端資料未清除" else mutable.value.historyStatus)
                 activeRequest?.let { recordSkipped(it, "BLE 連線中斷") }
@@ -274,7 +375,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     }
 
     private fun scheduleReconnect() {
-        if (!autoReconnect) return
+        if (!autoReconnect || deviceSelectionInProgress) return
         handler.removeCallbacks(reconnect)
         val delay = minOf(5 * 60_000L, 3_000L * (1L shl minOf(reconnectAttempt, 6))); reconnectAttempt++
         mutable.value = mutable.value.copy(phase = "已斷線，${delay / 1000} 秒後重試"); handler.postDelayed(reconnect, delay)
@@ -317,6 +418,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         val control = service.getCharacteristic(S1Protocol.CONTROL_POINT) ?: run { log("Control point 不存在"); return false }
         historyPackets.clear(); historyPacketsRemaining = null
         historyAttempt = 0
+        awaitingHistoryAck = false
         mutable.value = mutable.value.copy(historySyncing = true)
         enableNotify(g, sync)
         startHistoryAttempt(g, control)
@@ -328,8 +430,11 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         control: BluetoothGattCharacteristic? = g?.getService(S1Protocol.MEASUREMENT_SERVICE)?.getCharacteristic(S1Protocol.CONTROL_POINT)
     ) {
         handler.removeCallbacks(historyTimeout)
+        handler.removeCallbacks(historyRetrySettle)
         historyPackets.clear(); historyPacketsRemaining = null
         historyAttempt++
+        historyRetrySettling = false
+        awaitingHistoryAck = true
         val activeGatt = g
         if (activeGatt == null || control == null) {
             mutable.value = mutable.value.copy(historySyncing = false, historyStatus = "歷史同步中止：BLE 已斷線；裝置端資料未清除")
@@ -341,10 +446,16 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     }
 
     private fun receiveControlPoint(raw: String) {
-        if (!mutable.value.historySyncing || raw.length < 20) return
+        if (historyRetrySettling && raw.length >= 20 && raw.substring(12, 14) == "21" && raw.substring(4, 6) == "04") {
+            handler.removeCallbacks(historyRetrySettle)
+            handler.postDelayed(historyRetrySettle, HISTORY_RETRY_SETTLE_MS)
+            return
+        }
+        if (!mutable.value.historySyncing || !awaitingHistoryAck || raw.length < 20) return
         if (raw.substring(12, 14) != "21" || raw.substring(4, 6) != "04") return
         val countHex = raw.substring(16, 20)
         val count = countHex.substring(2, 4).plus(countHex.substring(0, 2)).toIntOrNull(16) ?: return
+        awaitingHistoryAck = false
         historyPacketsRemaining = count
         mutable.value = mutable.value.copy(historyStatus = if (count == 0) "裝置沒有待同步紀錄" else "正在接收歷史資料（$count 個封包）")
         log("裝置歷史同步預計接收 $count 個封包")
@@ -353,8 +464,20 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     }
 
     private fun receiveHistoryPacket(value: ByteArray) {
+        if (historyRetrySettling) {
+            handler.removeCallbacks(historyRetrySettle)
+            handler.postDelayed(historyRetrySettle, HISTORY_RETRY_SETTLE_MS)
+            return
+        }
         val remaining = historyPacketsRemaining ?: return
         if (!mutable.value.historySyncing || remaining <= 0) return
+        if (!HistoryRetryPolicy.isExpectedSequence(historyPackets.size, value)) {
+            log("歷史同步封包序號不連續；捨棄本次批次以避免混入前次嘗試")
+            handler.removeCallbacks(historyTimeout)
+            if (HistoryRetryPolicy.onNoProgress(historyAttempt, mutable.value.connected) == HistoryTimeoutAction.RETRY) prepareHistoryRetry()
+            else failHistorySync("封包序號不連續")
+            return
+        }
         historyPackets += value.copyOf()
         historyPacketsRemaining = remaining - 1
         mutable.value = mutable.value.copy(historyStatus = "正在接收歷史資料（${historyPackets.size}/${historyPackets.size + remaining - 1}）")
@@ -362,8 +485,34 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         if (remaining == 1) finishHistorySync(historyPackets.toList())
     }
 
+    private fun prepareHistoryRetry() {
+        handler.removeCallbacks(historyTimeout)
+        historyPackets.clear()
+        historyPacketsRemaining = null
+        awaitingHistoryAck = false
+        historyRetrySettling = true
+        mutable.value = mutable.value.copy(historyStatus = "正在排空前次通知，準備第 ${historyAttempt + 1}/${HistoryRetryPolicy.MAX_ATTEMPTS} 次嘗試")
+        handler.removeCallbacks(historyRetrySettle)
+        handler.postDelayed(historyRetrySettle, HISTORY_RETRY_SETTLE_MS)
+    }
+
+    private fun failHistorySync(reason: String) {
+        handler.removeCallbacks(historyTimeout)
+        handler.removeCallbacks(historyRetrySettle)
+        historyPackets.clear()
+        historyPacketsRemaining = null
+        awaitingHistoryAck = false
+        historyRetrySettling = false
+        val status = "歷史同步失敗：$reason；裝置端資料未清除"
+        mutable.value = mutable.value.copy(historySyncing = false, historyStatus = status)
+        log(status)
+    }
+
     private fun finishHistorySync(packets: List<ByteArray>) {
         handler.removeCallbacks(historyTimeout)
+        handler.removeCallbacks(historyRetrySettle)
+        awaitingHistoryAck = false
+        historyRetrySettling = false
         if (packets.isEmpty()) {
             mutable.value = mutable.value.copy(historySyncing = false)
             return
@@ -427,6 +576,8 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         handler.removeCallbacks(finishMeasurement)
         handler.removeCallbacks(measurementTimeout)
         handler.removeCallbacks(historyTimeout)
+        handler.removeCallbacks(historyRetrySettle)
+        handler.removeCallbacks(discoveryWindow)
         adapter?.bluetoothLeScanner?.stopScan(scanCallback)
         gatt?.disconnect()
     }

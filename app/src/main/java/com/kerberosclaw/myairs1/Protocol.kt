@@ -134,10 +134,23 @@ data class Measurement(
 
 enum class HistoryTimeoutAction { RETRY, FAIL }
 
+enum class DeviceDiscoveryAction { KEEP_SCANNING, AUTO_CONNECT, SHOW_SELECTION }
+
+object DeviceDiscoveryPolicy {
+    fun action(candidateCount: Int): DeviceDiscoveryAction = when (candidateCount) {
+        0 -> DeviceDiscoveryAction.KEEP_SCANNING
+        1 -> DeviceDiscoveryAction.AUTO_CONNECT
+        else -> DeviceDiscoveryAction.SHOW_SELECTION
+    }
+}
+
 object HistoryRetryPolicy {
     const val MAX_ATTEMPTS = 3
     fun onNoProgress(attempt: Int, connected: Boolean): HistoryTimeoutAction =
         if (connected && attempt < MAX_ATTEMPTS) HistoryTimeoutAction.RETRY else HistoryTimeoutAction.FAIL
 
     fun expectedPackets(received: Int, remaining: Int?): Int? = remaining?.let { received + it }
+
+    fun isExpectedSequence(received: Int, packet: ByteArray): Boolean =
+        packet.isNotEmpty() && (packet[0].toInt() and 0xff) == (received and 0xff)
 }

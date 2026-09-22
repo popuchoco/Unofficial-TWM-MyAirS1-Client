@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
+import androidx.compose.material.icons.automirrored.outlined.BluetoothSearching
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -80,6 +81,7 @@ class MainActivity : ComponentActivity() {
         var showScheduleDialog by remember { mutableStateOf(false) }
         var localSchedule by remember { mutableStateOf(db.localSchedule()) }
         var overviewRefreshing by remember { mutableStateOf(false) }
+        var showForgetDeviceDialog by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
         var customDelay by remember { mutableStateOf("") }
         var dailyTime by remember { mutableStateOf("08:00") }
@@ -141,7 +143,9 @@ class MainActivity : ComponentActivity() {
                 }
                 AppPage.CONNECTION -> ConnectionPage(Modifier.padding(padding), state, granted, disconnectAlert,
                     requestPermissions = { permissions.launch(requiredPermissions()) },
-                    onDisconnectAlert = { disconnectAlert = it; SettingsStore.setDisconnectAlert(this, it) })
+                    onDisconnectAlert = { disconnectAlert = it; SettingsStore.setDisconnectAlert(this, it) },
+                    changeDevice = { ble.changeDevice() },
+                    forgetDevice = { showForgetDeviceDialog = true })
                 AppPage.MEASUREMENT -> MeasurementPage(Modifier.padding(padding), state, queueState, localSchedule,
                     openSchedule = { showScheduleDialog = true },
                     cancelSchedule = { db.cancelSchedule(); localSchedule = null },
@@ -150,6 +154,50 @@ class MainActivity : ComponentActivity() {
                 AppPage.DEVICE -> DevicePage(Modifier.padding(padding), state, themeMode, onThemeChanged)
             }
         }
+        if (state.deviceCandidates.isNotEmpty()) AlertDialog(
+            onDismissRequest = { ble.dismissDeviceSelection() },
+            icon = { Icon(Icons.AutoMirrored.Outlined.BluetoothSearching, contentDescription = null) },
+            title = { Text("選擇 myAir S1") },
+            text = {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(state.deviceCandidates.size) { index ->
+                        val candidate = state.deviceCandidates[index]
+                        OutlinedCard(
+                            onClick = { ble.selectDevice(candidate.address) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(candidate.name, style = MaterialTheme.typography.titleMedium)
+                                    Text("訊號 ${candidate.rssi} dBm", style = MaterialTheme.typography.bodySmall)
+                                }
+                                if (candidate.isPreferred) AssistChip(
+                                    onClick = { ble.selectDevice(candidate.address) },
+                                    label = { Text("上次使用") },
+                                    leadingIcon = { Icon(Icons.Outlined.History, contentDescription = null) }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { ble.dismissDeviceSelection() }) { Text("取消") } }
+        )
+        if (showForgetDeviceDialog) AlertDialog(
+            onDismissRequest = { showForgetDeviceDialog = false },
+            icon = { Icon(Icons.Outlined.LinkOff, contentDescription = null) },
+            title = { Text("忘記這台裝置？") },
+            text = { Text("將移除上次使用的裝置並中斷目前連線。之後需重新掃描才能連線。") },
+            confirmButton = { TextButton(onClick = { showForgetDeviceDialog = false; ble.forgetPreferredDevice() }) { Text("忘記裝置") } },
+            dismissButton = { TextButton(onClick = { showForgetDeviceDialog = false }) { Text("取消") } }
+        )
         if (showExportDialog) AlertDialog(
             onDismissRequest = { showExportDialog = false },
             icon = { Icon(Icons.Outlined.TableView, contentDescription = null) }, title = { Text("匯出量測資料") },
@@ -227,13 +275,38 @@ class MainActivity : ComponentActivity() {
         } }
     }
 
-    @Composable private fun ConnectionPage(modifier: Modifier, state: UiState, granted: Boolean, disconnectAlert: Boolean, requestPermissions: () -> Unit, onDisconnectAlert: (Boolean) -> Unit) = Page(modifier) {
+    @Composable private fun ConnectionPage(
+        modifier: Modifier,
+        state: UiState,
+        granted: Boolean,
+        disconnectAlert: Boolean,
+        requestPermissions: () -> Unit,
+        onDisconnectAlert: (Boolean) -> Unit,
+        changeDevice: () -> Unit,
+        forgetDevice: () -> Unit
+    ) = Page(modifier) {
         SectionCard("藍牙連線", Icons.Outlined.Bluetooth) {
             Text(state.phase, style = MaterialTheme.typography.titleMedium)
             state.deviceName?.let { Text("裝置：$it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (!granted) Button(onClick = requestPermissions, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Lock, null); Spacer(Modifier.width(8.dp)); Text("允許必要權限") }
             Button(onClick = { ble.scan() }, enabled = granted && !state.scanning && !state.connecting && !state.connected, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Outlined.Search, null); Spacer(Modifier.width(8.dp)); Text(if (state.scanning) "掃描中" else "掃描並連線")
+            }
+            val remembered = state.preferredDeviceName ?: state.deviceName
+            if (remembered != null || state.address != null) {
+                HorizontalDivider()
+                Text("上次使用", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(remembered ?: "myAir S1", style = MaterialTheme.typography.titleMedium)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = changeDevice,
+                        enabled = granted && !state.scanning && !state.connecting && !state.busy && !state.historySyncing,
+                        modifier = Modifier.weight(1f)
+                    ) { Icon(Icons.Outlined.SwapHoriz, null); Spacer(Modifier.width(8.dp)); Text("更換裝置") }
+                    TextButton(onClick = forgetDevice, enabled = !state.busy && !state.historySyncing) {
+                        Icon(Icons.Outlined.LinkOff, null); Spacer(Modifier.width(8.dp)); Text("忘記裝置")
+                    }
+                }
             }
         }
         SectionCard("背景連線", Icons.Outlined.Sync) {
