@@ -3,11 +3,13 @@
 ## v0.3.6-test：GATT 連線世代隔離
 
 - 0.3.5 失敗紀錄證實，更換裝置時舊 descriptor write 未回呼會讓共用操作佇列永久維持執行中；新連線的量測命令因此從未送至裝置。
+- 0.3.6 已以相同的「初始化途中更換裝置，再立即手動量測」流程完成實機複測；新連線完成 notification、版本讀取、命令寫入及 28 筆量測串流，未再逾時。
 - 連線更換、忘記裝置、連線逾時與主動中斷現在都會重設 GATT 操作佇列。
 - descriptor／characteristic read-write／notification callback 會先核對 callback 所屬 GATT 是否仍為目前連線，過期 callback 不得完成或推進新連線佇列。
 - 新掃描候選只有在 service discovery 確認 myAir S1 量測服務後才保存為偏好裝置。
 - 15 秒 scan timeout 若已找到候選，改為立即完成候選判定，不再丟棄 discovery window 內的結果。
 - `GattOperationQueueTest` 覆蓋舊連線待辦被 reset 捨棄後，新連線可立即啟動操作的回歸情境。
+- 次要殘留：忘記裝置目前直接停止 Foreground Service，理論上存在服務 collector 在停止前多送一次斷線提醒的競態；尚無實機異常紀錄，不影響本輪換機與量測驗收，可在後續統一由 `ACTION_STOP`／通知抑制策略處理。
 
 ## 2026-09-22：v0.3.5 多裝置選擇與歷史重試隔離
 
