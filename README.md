@@ -76,6 +76,12 @@ Debug APK 會產生於：
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+若要產生不內嵌本機 API 設定的分享用測試 APK，請執行：
+
+```powershell
+.\gradlew.bat assembleDebug -PstripEmbeddedSecrets=true
+```
+
 ## 目前功能
 
 ### 功能全貌

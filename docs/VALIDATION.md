@@ -1,5 +1,13 @@
 # 實機與 Supabase 驗證紀錄
 
+## v0.3.5 更換裝置後手動量測未派發
+
+`myair-s1-diagnostic_0.3.5_v1.json` 顯示：第一條 GATT 連線只完成 Sensor notification，使用者隨即進入「更換裝置」；第二條連線雖完成 service discovery，後續沒有 Control Point notification、版本讀取或「已送出手動量測命令」，最後僅由 60 秒量測計時器結束任務。`v2` 在 App 重啟後完成全部 GATT 初始化，手動命令與量測串流皆正常。
+
+根因是更換裝置直接關閉舊 GATT 時，舊連線仍有一筆 descriptor write 等待 callback；共用的序列操作佇列因此維持 running，新連線的 notification、版本讀取及量測寫入全部排在其後而無法執行。v0.3.6-test 在連線世代切換時清空操作佇列，且所有 GATT callback 只允許作用於目前連線，避免舊 callback 干擾新佇列。
+
+同輪修正亦包含：掃描達 15 秒但已有候選時直接結算候選、不在服務驗證成功前保存新偏好裝置，以及「忘記裝置」時停止 Foreground Service。修正後仍需實機重測「連線初始化途中更換裝置，完成新連線後立即手動量測」情境。
+
 ## 範圍
 
 本輪驗證涵蓋 Android Client、BLE session 彙整、transactional outbox、Supabase ingestion、受保護的最後量測 API，以及 Agent bridge。公開紀錄只保留驗證結論，不包含裝置廣播名稱、藍牙位址、真實量測值、實際量測時間、API 金鑰或其他可識別環境的資訊。

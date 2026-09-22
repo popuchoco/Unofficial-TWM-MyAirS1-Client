@@ -4,10 +4,10 @@ import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
+import android.content.Intent
 import android.os.Handler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.util.ArrayDeque
 import java.util.concurrent.Executors
 
 private const val HISTORY_PROGRESS_TIMEOUT_MS = 10_000L
@@ -41,11 +41,10 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     val state: StateFlow<UiState> = mutable
     private val handler = Handler(context.mainLooper)
     private val dbExecutor = Executors.newSingleThreadExecutor()
-    private val opQueue = ArrayDeque<() -> Unit>()
+    private val operationQueue = GattOperationQueue()
     private val sessionSamples = mutableListOf<Measurement>()
     private val sessionLock = Any()
     private var gatt: BluetoothGatt? = null
-    private var operationRunning = false
     @Volatile private var autoReconnect = false
     private var reconnectAttempt = 0
     private var activeRequest: MeasurementRequest? = null
@@ -58,6 +57,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     private var historyRetrySettling = false
     private val scanCandidates = linkedMapOf<String, BleDeviceCandidate>()
     private var deviceSelectionInProgress = false
+    private var pendingCandidate: BleDeviceCandidate? = null
     private var queueReadyCallback: (() -> Unit)? = null
     private val finishMeasurement = Runnable { finishSession() }
     private val measurementTimeout = Runnable {
@@ -88,6 +88,8 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             log("GATT 連線逾時")
             val timedOutGatt = gatt
             gatt = null
+            pendingCandidate = null
+            resetOperationQueue()
             mutable.value = mutable.value.copy(connecting = false, connected = false)
             timedOutGatt?.disconnect()
             timedOutGatt?.close()
@@ -96,6 +98,11 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     }
     private val scanTimeout: Runnable = Runnable {
         if (mutable.value.scanning) {
+            if (scanCandidates.isNotEmpty()) {
+                log("BLE 掃描達 15 秒，使用已找到的 ${scanCandidates.size} 台候選裝置")
+                finishCandidateDiscovery()
+                return@Runnable
+            }
             handler.removeCallbacks(discoveryWindow)
             adapter?.bluetoothLeScanner?.stopScan(scanCallback)
             val phase = if (autoReconnect) "掃描逾時，等待自動重試" else "掃描逾時，請靠近裝置後重試"
@@ -130,8 +137,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         deviceSelectionInProgress = false
         scanCandidates.clear()
         mutable.value = mutable.value.copy(deviceCandidates = emptyList())
-        rememberPreferred(candidate)
-        adapter?.getRemoteDevice(address)?.let(::connect)
+        connectCandidate(candidate)
     }
 
     fun dismissDeviceSelection() {
@@ -144,9 +150,13 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     fun changeDevice() {
         deviceSelectionInProgress = true
         handler.removeCallbacks(reconnect)
-        gatt?.disconnect()
-        gatt?.close()
+        handler.removeCallbacks(connectionTimeout)
+        val previousGatt = gatt
         gatt = null
+        pendingCandidate = null
+        resetOperationQueue()
+        previousGatt?.disconnect()
+        previousGatt?.close()
         mutable.value = mutable.value.copy(connected = false, connecting = false, phase = "請選擇其他裝置")
         handler.postDelayed({ scanInternal() }, 300)
     }
@@ -156,22 +166,30 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         autoReconnect = false
         handler.removeCallbacks(reconnect)
         prefs.edit().remove("preferred_address").remove("preferred_name").apply()
-        gatt?.disconnect()
-        gatt?.close()
+        val previousGatt = gatt
         gatt = null
+        pendingCandidate = null
+        resetOperationQueue()
+        previousGatt?.disconnect()
+        previousGatt?.close()
         scanCandidates.clear()
         mutable.value = mutable.value.copy(
             connected = false, connecting = false, deviceName = null, address = null,
             preferredDeviceName = null, deviceCandidates = emptyList(), backgroundEnabled = false,
             phase = "已忘記綁定裝置"
         )
+        context.stopService(Intent(context, S1ForegroundService::class.java))
     }
 
     private fun connectPreferredOrScan() {
         if (mutable.value.connected || mutable.value.connecting || mutable.value.scanning) return
         val address = prefs.getString("preferred_address", null)
         val device = address?.let { runCatching { adapter?.getRemoteDevice(it) }.getOrNull() }
-        if (device != null) { log("嘗試重新連線已綁定裝置"); connect(device) } else scanInternal()
+        if (device != null) {
+            pendingCandidate = null
+            log("嘗試重新連線已綁定裝置")
+            connect(device)
+        } else scanInternal()
     }
 
     private fun scanInternal() {
@@ -225,9 +243,8 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         if (DeviceDiscoveryPolicy.action(candidates.size) == DeviceDiscoveryAction.AUTO_CONNECT) {
             val candidate = candidates.single()
             deviceSelectionInProgress = false
-            rememberPreferred(candidate)
             mutable.value = mutable.value.copy(scanning = false, deviceCandidates = emptyList())
-            adapter?.getRemoteDevice(candidate.address)?.let(::connect)
+            connectCandidate(candidate)
         } else {
             mutable.value = mutable.value.copy(
                 scanning = false,
@@ -237,17 +254,24 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         }
     }
 
+    private fun connectCandidate(candidate: BleDeviceCandidate) {
+        pendingCandidate = candidate
+        mutable.value = mutable.value.copy(deviceName = candidate.name, address = candidate.address)
+        log("選擇 ${candidate.name}，RSSI ${candidate.rssi} dBm")
+        adapter?.getRemoteDevice(candidate.address)?.let(::connect)
+    }
+
     private fun rememberPreferred(candidate: BleDeviceCandidate) {
         prefs.edit().putString("preferred_address", candidate.address).putString("preferred_name", candidate.name).apply()
         mutable.value = mutable.value.copy(
             deviceName = candidate.name, address = candidate.address, preferredDeviceName = candidate.name
         )
-        log("選擇 ${candidate.name}，RSSI ${candidate.rssi} dBm")
     }
 
     private fun connect(device: BluetoothDevice) {
         handler.removeCallbacks(reconnect)
         handler.removeCallbacks(connectionTimeout)
+        resetOperationQueue()
         mutable.value = mutable.value.copy(phase = "正在連線…", connecting = true, connected = false, address = device.address)
         gatt?.close()
         gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
@@ -258,7 +282,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (gatt !== g) { g.close(); return }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                reconnectAttempt = 0; prefs.edit().putString("preferred_address", g.device.address).apply()
+                reconnectAttempt = 0
                 mutable.value = mutable.value.copy(phase = "已連線，正在讀取服務…", address = g.device.address)
                 log("GATT 已連線（status=$status），開始讀取服務"); g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -269,38 +293,60 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
                 timeSyncInProgress = false
                 awaitingHistoryAck = false
                 historyRetrySettling = false
+                pendingCandidate = null
                 mutable.value = mutable.value.copy(phase = "已斷線，等待重新連線", connecting = false, connected = false, busy = false,
                     historySyncing = false, historyStatus = if (mutable.value.historySyncing) "歷史同步因斷線中止；裝置端資料未清除" else mutable.value.historyStatus)
                 activeRequest?.let { recordSkipped(it, "BLE 連線中斷") }
-                operationRunning = false; opQueue.clear(); log("GATT 已斷線（status=$status）"); g.close()
+                operationQueue.reset(); log("GATT 已斷線（status=$status）"); g.close()
                 finishActiveRequest()
                 if (gatt === g) gatt = null
                 scheduleReconnect()
             }
         }
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            if (gatt !== g) { g.close(); return }
             val service = g.getService(S1Protocol.MEASUREMENT_SERVICE)
             log("服務探索 status=$status；共 ${g.services.size} 個服務")
-            if (status != BluetoothGatt.GATT_SUCCESS || service == null) { mutable.value = mutable.value.copy(phase = "找不到 myAir S1 量測服務"); g.disconnect(); return }
+            if (status != BluetoothGatt.GATT_SUCCESS || service == null) {
+                pendingCandidate = null
+                mutable.value = mutable.value.copy(phase = "找不到 myAir S1 量測服務")
+                g.disconnect()
+                return
+            }
+            val selected = pendingCandidate?.takeIf { it.address == g.device.address }
+            if (selected != null) rememberPreferred(selected)
+            else prefs.edit().putString("preferred_address", g.device.address).apply()
+            pendingCandidate = null
             handler.removeCallbacks(connectionTimeout)
             mutable.value = mutable.value.copy(phase = "已連線，可開始量測", connecting = false, connected = true)
             enableNotify(g, service.getCharacteristic(S1Protocol.SENSOR_MEASUREMENT)); enableNotify(g, service.getCharacteristic(S1Protocol.CONTROL_POINT))
             readFirmwareVersion(g)
             queueReadyCallback?.invoke()
         }
-        @Deprecated("Deprecated in API 33") override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) = receive(c.uuid, c.value)
-        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) = receive(c.uuid, value)
-        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) { log("通知設定 ${descriptor.characteristic.uuid} status=$status"); operationDone() }
+        @Deprecated("Deprecated in API 33") override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
+            if (gatt === g) receive(c.uuid, c.value)
+        }
+        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
+            if (gatt === g) receive(c.uuid, value)
+        }
+        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (gatt !== g) return
+            log("通知設定 ${descriptor.characteristic.uuid} status=$status")
+            operationQueue.complete()
+        }
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (gatt !== g) return
             log("寫入 ${characteristic.uuid} status=$status")
             if (timeSyncInProgress && characteristic.uuid == S1Protocol.CONTROL_POINT) finishTimeSync(status == BluetoothGatt.GATT_SUCCESS)
-            operationDone()
+            operationQueue.complete()
         }
         @Deprecated("Deprecated in API 33")
-        override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) =
-            receiveRead(characteristic.uuid, characteristic.value, status)
-        override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) =
-            receiveRead(characteristic.uuid, value, status)
+        override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (gatt === g) receiveRead(characteristic.uuid, characteristic.value, status)
+        }
+        override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+            if (gatt === g) receiveRead(characteristic.uuid, value, status)
+        }
     }
 
     private fun receive(uuid: java.util.UUID, value: ByteArray) {
@@ -334,7 +380,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             mutable.value = mutable.value.copy(firmwareVersion = version)
             log(if (version == null) "裝置未提供韌體版本" else "已讀取韌體版本")
         }
-        operationDone()
+        operationQueue.complete()
     }
 
     private fun readFirmwareVersion(g: BluetoothGatt) {
@@ -342,7 +388,7 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
             ?: g.getService(S1Protocol.STANDARD_DEVICE_INFORMATION_SERVICE)?.getCharacteristic(S1Protocol.STANDARD_FIRMWARE_REVISION)
         if (characteristic == null) { mutable.value = mutable.value.copy(firmwareVersion = null); log("裝置未提供標準韌體版本欄位"); return }
         enqueue {
-            if (!g.readCharacteristic(characteristic)) { log("無法讀取韌體版本"); operationDone() }
+            if (!g.readCharacteristic(characteristic)) { log("無法讀取韌體版本"); operationQueue.complete() }
         }
     }
 
@@ -384,10 +430,28 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
     private fun enableNotify(g: BluetoothGatt, c: BluetoothGattCharacteristic?) {
         if (c == null) { log("通知 characteristic 不存在"); return }
         enqueue {
-            g.setCharacteristicNotification(c, true); val d = c.getDescriptor(S1Protocol.CCCD)
-            if (d == null) { log("通知 CCCD 不存在"); operationDone() }
-            else if (android.os.Build.VERSION.SDK_INT >= 33) g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-            else { @Suppress("DEPRECATION") d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE; @Suppress("DEPRECATION") g.writeDescriptor(d) }
+            val notificationEnabled = g.setCharacteristicNotification(c, true)
+            val d = c.getDescriptor(S1Protocol.CCCD)
+            if (!notificationEnabled) {
+                log("無法在本機啟用 ${c.uuid} 通知")
+                operationQueue.complete()
+                return@enqueue
+            }
+            if (d == null) { log("通知 CCCD 不存在"); operationQueue.complete() }
+            else if (android.os.Build.VERSION.SDK_INT >= 33) {
+                if (g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) != BluetoothStatusCodes.SUCCESS) {
+                    log("通知 ${c.uuid} 無法排入 GATT")
+                    operationQueue.complete()
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                @Suppress("DEPRECATION")
+                if (!g.writeDescriptor(d)) {
+                    log("通知 ${c.uuid} 無法排入 GATT")
+                    operationQueue.complete()
+                }
+            }
         }
     }
 
@@ -563,12 +627,11 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         if (ok) log("已送出${label}命令") else {
             log("$label 命令無法排入 GATT")
             if (label == "時間同步" && timeSyncInProgress) finishTimeSync(false)
-            operationDone()
+            operationQueue.complete()
         }
     }
-    @Synchronized private fun enqueue(op: () -> Unit) { opQueue.add(op); runNext() }
-    @Synchronized private fun runNext() { if (!operationRunning && opQueue.isNotEmpty()) { operationRunning = true; opQueue.removeFirst().invoke() } }
-    @Synchronized private fun operationDone() { operationRunning = false; runNext() }
+    private fun enqueue(op: () -> Unit) = operationQueue.enqueue(op)
+    private fun resetOperationQueue() = operationQueue.reset()
     fun disconnect() {
         stopAutoReconnect()
         handler.removeCallbacks(scanTimeout)
@@ -579,6 +642,8 @@ class BleManager(private val context: Context, private val db: AppDatabase) {
         handler.removeCallbacks(historyRetrySettle)
         handler.removeCallbacks(discoveryWindow)
         adapter?.bluetoothLeScanner?.stopScan(scanCallback)
+        pendingCandidate = null
+        resetOperationQueue()
         gatt?.disconnect()
     }
 }

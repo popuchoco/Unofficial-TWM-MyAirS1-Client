@@ -10,7 +10,8 @@ val localProps = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
-fun localProp(name: String): String = localProps.getProperty(name, "")
+val stripEmbeddedSecrets = providers.gradleProperty("stripEmbeddedSecrets").orNull.toBoolean()
+fun localProp(name: String): String = if (stripEmbeddedSecrets) "" else localProps.getProperty(name, "")
 
 android {
     namespace = "com.kerberosclaw.myairs1"
@@ -19,8 +20,8 @@ android {
         applicationId = "com.kerberosclaw.myairs1"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.3.5-test"
+        versionCode = 11
+        versionName = "0.3.6-test"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "MYAIR_API_URL", "\"${localProp("MYAIR_API_URL")}\"")
         buildConfigField("String", "MYAIR_SUPABASE_ANON_KEY", "\"${localProp("MYAIR_SUPABASE_ANON_KEY")}\"")
