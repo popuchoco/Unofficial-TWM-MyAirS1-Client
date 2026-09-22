@@ -27,12 +27,9 @@
 - [x] Transactional outbox
 - [x] Supabase ingestion／最後量測 read API 範本
 - [x] upload token 與 Agent read token 分離
-- [ ] Home Assistant sensor integration
-- [ ] Node-RED flow example
-- [ ] 裝置狀態與空氣品質 dashboard
-- [ ] Supabase 遠端量測命令佇列（不屬於第一版本地排程）
 - [x] 今日與近 30 日量測圖表
 - [x] Material 3 五分頁及深淺色模式
 - [x] BLE 斷線通知
 - [x] 裝置版本資訊讀取
-- [ ] 使用者主動設定站點的民間空氣地圖 adapter（不預設蒐集 GPS）
+
+尚未實作、可由社群自行延伸的構想已移至 README 的「可擴充範圍」；它們不屬於目前 Roadmap 的既定交付項目。

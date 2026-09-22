@@ -75,16 +75,43 @@
 
 目前是可安裝與實機測量的早期測試版本。基礎 BLE 連線、服務探索、通知訂閱、量測命令與資料解析已通過實機驗證。
 
-後續規劃：
+目前驗證重點：
 
 - 依實機 feedback 驗證歷史同步的封包邊界、重複資料與裝置容量；確認前維持唯讀。
-- Supabase 遠端量測命令佇列（目前未實作，第一版本地排程不含遠端觸發）。
-- Home Assistant／Node-RED adapter。
-- 使用者主動設定的站點／民間空氣地圖 adapter（本版不實作 GPS）。
 
-詳細進度見 [Roadmap](docs/ROADMAP.md)。
+已完成的開發里程碑見 [Roadmap](docs/ROADMAP.md)。
 
 卡片級距參考[環境部空氣品質指標說明](https://airtw.moenv.gov.tw/CHT/Information/Standard/AirQualityIndicator.aspx)。官方 AQI 的即時 PM2.5 指標含移動平均公式，因此 App 不把單次感測值標示成 AQI。
+
+## 可擴充範圍
+
+目前程式已提供 BLE 連線、FIFO 量測佇列、本機資料庫、transactional outbox 與受保護的唯讀 API 等基礎元件。下列項目尚未實作，也不是既定版本承諾；開源社群可依自己的 IoT、Smart Home 或研究情境選擇擴充。
+
+| 擴充方向 | 可採用的既有基礎 | 建議改造內容 |
+| --- | --- | --- |
+| Home Assistant 整合 | 最新量測唯讀 API、outbox | 建立 sensor integration、MQTT bridge 或 RESTful sensor |
+| Node-RED 自動化 | HTTPS API、結構化量測資料 | 提供 flow 範例、告警條件與資料轉送節點 |
+| 裝置與空氣品質 Dashboard | 最新量測 API、30 天本機資料模型 | 建立網頁儀表板、長期趨勢與多裝置檢視 |
+| 遠端量測觸發（Touch）API | `REMOTE_COMMAND` 來源、FIFO 任務佇列 | 建立受保護的命令佇列、手機接收機制與執行回報 |
+| 站點與民間空氣地圖 | 後端 `metadata` 擴充欄位 | 加入使用者自訂站點，或另行設計明確啟用的 GPS 定位模式 |
+
+### 遠端量測觸發
+
+- 可由 Supabase、其他自架 API 或自動化服務派發量測命令，再交由手機既有 FIFO 佇列執行。
+- 擴充時應加入身分驗證、命令到期時間、冪等識別、重試上限與執行狀態回報，避免重複觸發或離線命令無限堆積。
+- 手機仍需能連線至感測器；遠端 API 只負責派發任務，不能取代 BLE 實體連線。
+
+### 站點、地圖與 GPS
+
+- 可先採用使用者手動設定站點的方式，讓資料能對應民間空氣地圖，而不要求定位權限。
+- 社群若需要 GPS，可另行加入明確啟用、可隨時停用的定位模式，並自行設計座標保存、精度降階、上傳同意與刪除機制。
+- 現行版本不讀取、保存或上傳 GPS 座標；既有 API 也不接受位置資料。擴充者不應將定位視為預設量測行為。
+
+### Smart Home 與視覺化
+
+- Home Assistant、Node-RED 與自製 Dashboard 可直接從受保護的最新量測 API 起步，也可另建 bridge 將資料轉為 MQTT 或其他協定。
+- 若要保存超過 30 天的趨勢或管理多台裝置，建議交由外部資料庫負責，避免擴張手機端 SQLite 的既有保留策略。
+- 新增整合時不應把 API 金鑰、裝置識別資訊或私人站點資料提交至 Repository。
 
 ## 架構
 
