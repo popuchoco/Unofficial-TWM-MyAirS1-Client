@@ -12,6 +12,70 @@
 - 無線連線：Bluetooth Low Energy 4.2。
 - BLE 工作頻率：`2402–2480 MHz`。
 
+## 專案狀態
+
+目前是可安裝與實機測量的早期測試版本。基礎 BLE 連線、服務探索、通知訂閱、量測命令與資料解析已通過實機驗證。
+
+目前驗證重點：
+
+- 依實機 feedback 驗證歷史同步的封包邊界、重複資料與裝置容量；確認前維持唯讀。
+
+已完成的開發里程碑見 [Roadmap](docs/ROADMAP.md)。
+
+卡片級距參考[環境部空氣品質指標說明](https://airtw.moenv.gov.tw/CHT/Information/Standard/AirQualityIndicator.aspx)。官方 AQI 的即時 PM2.5 指標含移動平均公式，因此 App 不把單次感測值標示成 AQI。
+
+## 架構
+
+```text
+myAir S1
+    │ Bluetooth Low Energy
+    ▼
+Android Client
+    ├── BLE session controller
+    ├── measurement parser
+    ├── private SQLite storage
+    ├── diagnostic console / JSON export
+    └── secure outbox
+             │ HTTPS / private network
+             ▼
+       Supabase / bridge / Agent
+```
+
+- [架構文件](docs/ARCHITECTURE.md)
+- [軟體設計文件](docs/SOFTWARE_DESIGN.md)
+- [資料格式](docs/DATA_FORMAT.md)
+- [安全與隱私](docs/SECURITY.md)
+- [Supabase 與 Agent bridge 設定](docs/API_SETUP.md)
+- [實機與 Supabase 驗證紀錄](docs/VALIDATION.md)
+- [Code Review 紀錄](docs/CODE_REVIEW.md)
+- [v0.3 Modern UI 與功能設計](docs/UI_DESIGN.md)
+
+## 開發環境
+
+- JDK 17
+- Android SDK 35
+- Android Gradle Plugin 8.7.2
+- Kotlin 2.0.21
+- Gradle Wrapper 8.9
+
+建立本機 SDK 設定：
+
+```powershell
+Copy-Item local.properties.example local.properties
+```
+
+請依電腦環境調整 `local.properties` 的 `sdk.dir`，然後執行：
+
+```powershell
+.\gradlew.bat testDebugUnitTest assembleDebug
+```
+
+Debug APK 會產生於：
+
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
+
 ## 目前功能
 
 ### 功能全貌
@@ -71,17 +135,26 @@
 - 可透過 Android 文件選擇器匯出 JSON 診斷資料。
 - Android 12 以上使用 Nearby devices 權限，不蒐集手機定位；GPS 功能僅保留未來擴充空間。
 
-## 專案狀態
+## 手機測試
 
-目前是可安裝與實機測量的早期測試版本。基礎 BLE 連線、服務探索、通知訂閱、量測命令與資料解析已通過實機驗證。
+1. 關閉其他可能正在連線感測器的 App。
+2. 安裝本專案產生的 APK。
+3. 允許「附近裝置」權限。
+4. 按「掃描並連線」。
+5. 連線完成後按「立即量測」。
+6. 如需回報問題，按「匯出診斷」並先確認內容不含不希望分享的裝置資訊。
 
-目前驗證重點：
+## 韌體與疑難排解
 
-- 依實機 feedback 驗證歷史同步的封包邊界、重複資料與裝置容量；確認前維持唯讀。
+台灣大哥大未公開提供本裝置的獨立韌體下載檔或手動更新工具；既有智慧家庭系統也已不再維護此裝置。因此，本專案沒有設計韌體下載、檢查、更新或刷寫功能。
 
-已完成的開發里程碑見 [Roadmap](docs/ROADMAP.md)。
+若遇到藍牙配對或數值同步異常，建議依序嘗試：
 
-卡片級距參考[環境部空氣品質指標說明](https://airtw.moenv.gov.tw/CHT/Information/Standard/AirQualityIndicator.aspx)。官方 AQI 的即時 PM2.5 指標含移動平均公式，因此 App 不把單次感測值標示成 AQI。
+1. 關閉再開啟手機藍牙。
+2. 將 myAir S1 偵測器重新開機後再連線。
+3. 仍無法恢復時，重新安裝 App 後再嘗試。
+
+重新安裝 App 會清除其私有 SQLite 量測資料、尚未送出的 outbox 與已保存的偏好裝置；如需保留診斷內容，請先使用「匯出診斷」。
 
 ## 可擴充範圍
 
@@ -112,79 +185,6 @@
 - Home Assistant、Node-RED 與自製 Dashboard 可直接從受保護的最新量測 API 起步，也可另建 bridge 將資料轉為 MQTT 或其他協定。
 - 若要保存超過 30 天的趨勢或管理多台裝置，建議交由外部資料庫負責，避免擴張手機端 SQLite 的既有保留策略。
 - 新增整合時不應把 API 金鑰、裝置識別資訊或私人站點資料提交至 Repository。
-
-## 架構
-
-```text
-myAir S1
-    │ Bluetooth Low Energy
-    ▼
-Android Client
-    ├── BLE session controller
-    ├── measurement parser
-    ├── private SQLite storage
-    ├── diagnostic console / JSON export
-    └── secure outbox
-             │ HTTPS / private network
-             ▼
-       Supabase / bridge / Agent
-```
-
-- [架構文件](docs/ARCHITECTURE.md)
-- [軟體設計文件](docs/SOFTWARE_DESIGN.md)
-- [資料格式](docs/DATA_FORMAT.md)
-- [安全與隱私](docs/SECURITY.md)
-- [Supabase 與 Agent bridge 設定](docs/API_SETUP.md)
-- [實機與 Supabase 驗證紀錄](docs/VALIDATION.md)
-- [Code Review 紀錄](docs/CODE_REVIEW.md)
-- [v0.3 Modern UI 與功能設計](docs/UI_DESIGN.md)
-
-## 開發環境
-
-- JDK 17
-- Android SDK 35
-- Android Gradle Plugin 8.7.2
-- Kotlin 2.0.21
-- Gradle Wrapper 8.9
-
-建立本機 SDK 設定：
-
-```powershell
-Copy-Item local.properties.example local.properties
-```
-
-請依電腦環境調整 `local.properties` 的 `sdk.dir`，然後執行：
-
-```powershell
-.\gradlew.bat testDebugUnitTest assembleDebug
-```
-
-Debug APK 會產生於：
-
-```text
-app/build/outputs/apk/debug/app-debug.apk
-```
-
-## 手機測試
-
-1. 關閉其他可能正在連線感測器的 App。
-2. 安裝本專案產生的 APK。
-3. 允許「附近裝置」權限。
-4. 按「掃描並連線」。
-5. 連線完成後按「立即量測」。
-6. 如需回報問題，按「匯出診斷」並先確認內容不含不希望分享的裝置資訊。
-
-## 韌體與疑難排解
-
-台灣大哥大未公開提供本裝置的獨立韌體下載檔或手動更新工具；既有智慧家庭系統也已不再維護此裝置。因此，本專案沒有設計韌體下載、檢查、更新或刷寫功能。
-
-若遇到藍牙配對或數值同步異常，建議依序嘗試：
-
-1. 關閉再開啟手機藍牙。
-2. 將 myAir S1 偵測器重新開機後再連線。
-3. 仍無法恢復時，重新安裝 App 後再嘗試。
-
-重新安裝 App 會清除其私有 SQLite 量測資料、尚未送出的 outbox 與已保存的偏好裝置；如需保留診斷內容，請先使用「匯出診斷」。
 
 ## 資料與隱私
 
